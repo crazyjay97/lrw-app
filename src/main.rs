@@ -4,6 +4,7 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_futures::select;
 use embassy_stm32::{
     bind_interrupts,
     exti::ExtiInput,
@@ -22,11 +23,12 @@ use embassy_sync::{
     channel::{Channel, Sender},
     mutex::Mutex,
 };
-use embassy_time::Duration;
 use embedded_graphics::{
     image::Image,
-    pixelcolor::{self, BinaryColor},
+    mono_font::{ascii::FONT_8X13, iso_8859_1::FONT_4X6, iso_8859_5::FONT_6X10, MonoTextStyleBuilder},
+    pixelcolor::BinaryColor,
     prelude::*,
+    text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use heapless::Vec;
 use panic_probe as _;
@@ -42,6 +44,7 @@ bind_interrupts!(struct Irqs {
 type UART1ReadType = Mutex<ThreadModeRawMutex, Option<UartRx<'static, Async>>>;
 type UART1WriteType = Mutex<ThreadModeRawMutex, Option<UartTx<'static, Async>>>;
 type Key1Type = Mutex<ThreadModeRawMutex, Option<ExtiInput<'static>>>;
+type Key2Type = Mutex<ThreadModeRawMutex, Option<ExtiInput<'static>>>;
 type Ssd1306DisplayType = Ssd1306Async<
     I2CInterface<i2c::I2c<'static, Async>>,
     DisplaySize128x64,
@@ -52,9 +55,10 @@ type DisplayType = Mutex<ThreadModeRawMutex, Option<Ssd1306DisplayType>>;
 static UART1_READ: UART1ReadType = Mutex::new(None);
 static UART1_WRITE: UART1WriteType = Mutex::new(None);
 static KEY1: Key1Type = Mutex::new(None);
+static KEY2: Key2Type = Mutex::new(None);
 static DISPLAY_CHANNEL: Channel<ThreadModeRawMutex, (Vec<u8, 1024>, usize, bool), 2> =
     Channel::new();
-
+static MENU_IDX: Mutex<ThreadModeRawMutex, usize> = Mutex::new(0);
 static DISPLAY: DisplayType = Mutex::new(None);
 
 #[embassy_executor::main]
@@ -77,10 +81,11 @@ async fn main(spawner: Spawner) {
     config.rcc.mux.i2c1sel = rcc::mux::I2c1sel::SYS;
     let mut p = embassy_stm32::init(config);
     let (_oled_dc, _oled_rst) = display_pre_init(&mut p.PD11, &mut p.PD12);
-
-    let button = ExtiInput::new(p.PD8, p.EXTI8, Pull::Up);
     {
+        let button = ExtiInput::new(p.PD8, p.EXTI8, Pull::Up);
         *KEY1.lock().await = Some(button);
+        let button = ExtiInput::new(p.PD10, p.EXTI10, Pull::Up);
+        *KEY2.lock().await = Some(button);
     }
     {
         let mut config = usart::Config::default();
@@ -98,27 +103,48 @@ async fn main(spawner: Spawner) {
     }
     let i2c = init_display_i2c!(p);
     //unwrap!(spawner.spawn(serial_listen(DISPLAY_CHANNEL.sender())));
-    unwrap!(spawner.spawn(key1_handle(DISPLAY_CHANNEL.sender())));
+    unwrap!(spawner.spawn(key_handle(DISPLAY_CHANNEL.sender())));
     dislay_init(i2c).await;
 }
 
 #[embassy_executor::task]
-async fn key1_handle(sender: Sender<'static, ThreadModeRawMutex, (Vec<u8, 1024>, usize, bool), 2>) {
-    let mut button = KEY1.lock().await.take().unwrap();
+async fn key_handle(sender: Sender<'static, ThreadModeRawMutex, (Vec<u8, 1024>, usize, bool), 2>) {
+    let mut key1 = KEY1.lock().await;
+    let key1 = key1.as_mut().unwrap();
+
+    let mut key2 = KEY2.lock().await;
+    let key2 = key2.as_mut().unwrap();
+
     loop {
-        button.wait_for_any_edge().await;
-        if button.is_high() {
-            info!("button pressed");
-        } else {
-            info!("button released");
-            //let cmd = "at+deveui?\r\n".as_bytes();
-            //let _ = uart1_write(cmd).await;
-            let buf = [0u8; 1024];
-            let b: Vec<u8, 1024> = Vec::from_slice(&buf).unwrap();
-            {
-                sender.send((b, 0, true)).await;
-            }
-        }
+        select::select(
+            async {
+                key1.wait_for_any_edge().await;
+                if key1.is_high() {
+                    info!("button pressed");
+                } else {
+                    info!("button released");
+                    let buf = [0u8; 1024];
+                    let b: Vec<u8, 1024> = Vec::from_slice(&buf).unwrap();
+                    {
+                        sender.send((b, 0, true)).await;
+                    }
+                }
+            },
+            async {
+                key2.wait_for_any_edge().await;
+                if key2.is_high() {
+                    info!("button pressed");
+                } else {
+                    info!("button released");
+                    let buf = [0u8; 1024];
+                    let b: Vec<u8, 1024> = Vec::from_slice(&buf).unwrap();
+                    {
+                        sender.send((b, 0, false)).await;
+                    }
+                }
+            },
+        )
+        .await;
     }
 }
 
@@ -192,18 +218,15 @@ async fn dislay_init(i2c: embassy_stm32::i2c::I2c<'static, Async>) {
     {
         *DISPLAY.lock().await = Some(display);
     }
-    let mut idx = 0;
-    draw_menus(idx, true).await;
+    draw_menus(0).await;
     loop {
         let message: (Vec<u8, 1024>, usize, bool) = DISPLAY_CHANNEL.receive().await;
         match core::str::from_utf8(&message.0[0..message.1]) {
-            Ok(data) => {
+            Ok(_data) => {
                 if message.2 {
-                    idx += 1;
-                    draw_menus(idx, true).await;
+                    draw_menus(1).await;
                 } else {
-                    idx -= 1;
-                    draw_menus(idx, false).await;
+                    draw_menus(-1).await;
                 }
             }
             Err(_) => {
@@ -220,7 +243,8 @@ struct Menu {
 
 /// 单页菜单
 #[inline]
-async fn draw_menus<'a>(idx: usize, to_left: bool) {
+async fn draw_menus<'a>(dire: i8) {
+    let mut current_idx = MENU_IDX.lock().await;
     // 菜单列表
     let menus = [
         Menu {
@@ -252,15 +276,27 @@ async fn draw_menus<'a>(idx: usize, to_left: bool) {
             label: "imessage",
         },
     ];
+    if (dire == 1 && *current_idx >= (menus.len() - 1)) || (dire == -1 && *current_idx == 0) {
+        return;
+    }
+    let idx: usize = if dire == 1 {
+        *current_idx += 1;
+        *current_idx
+    } else if dire == -1 {
+        *current_idx -= 1;
+        *current_idx
+    } else {
+        *current_idx
+    };
+
     let mut display = DISPLAY.lock().await;
     let display = display.as_mut().unwrap();
     let menu = &menus[idx];
     let pos = calc_start_pos((menu.bmp.size().width as i32, menu.bmp.size().height as i32));
     let w = DisplaySize128x64::WIDTH as i32;
-    let mut offset_x = w + pos.0;
-    info!("draw menu {} {} {}", offset_x, w, pos.0);
+    let mut offset_x = if dire >= 0 { w + pos.0 } else { pos.0 - w };
     let mut last: Option<(i32, i32, &Menu)> = {
-        if to_left {
+        if dire >= 0 {
             if idx > 0 {
                 let menu = &menus[idx - 1];
                 let pos =
@@ -270,8 +306,8 @@ async fn draw_menus<'a>(idx: usize, to_left: bool) {
                 None
             }
         } else {
-            if idx < menus.len() - 1 {
-                let menu = &menus[idx - 1];
+            if idx <= menus.len() - 2 {
+                let menu = &menus[idx + 1];
                 let pos =
                     calc_start_pos((menu.bmp.size().width as i32, menu.bmp.size().height as i32));
                 Some((pos.0, pos.1, menu))
@@ -280,24 +316,61 @@ async fn draw_menus<'a>(idx: usize, to_left: bool) {
             }
         }
     };
+    let bounding_box = display.bounding_box();
+    info!("bounding_box: {:?}",bounding_box);
+    let character_style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
+        .build();
+    let center_aligned = TextStyleBuilder::new()
+        .alignment(Alignment::Center)
+        .baseline(Baseline::Bottom)
+        .build();
     loop {
         let _ = display.clear(BinaryColor::Off);
-        //info!("draw menu {} {} {}", offset_x, w, pos.0);
         // move last
         if let Some(last) = last.as_mut() {
             draw_menu(display, &last.2.bmp, (last.0, last.1)).await;
-            last.0 = if to_left { last.0 + 4 } else { last.0 - 4 }
+            last.0 = if dire >= 0 { last.0 - 4 } else { last.0 + 4 }
         }
         // draw current menu
-        if offset_x <= w {
-            draw_menu(display, &menu.bmp, (offset_x, pos.1)).await;
-        }
-        if offset_x == pos.0 {
-            info!("stop!!!!!!");
-            break;
+        if dire >= 0 {
+            if offset_x <= w {
+                draw_menu(display, &menu.bmp, (offset_x, pos.1)).await;
+            }
+            if offset_x == pos.0 {
+                let _ = Text::with_text_style(
+                    menu.label,
+                    Point{x:64,y:64},
+                    character_style,
+                    center_aligned,
+                )
+                .draw(display);
+                let _ = display.flush().await;
+                break;
+            }
+        } else {
+            if offset_x <= w {
+                draw_menu(display, &menu.bmp, (offset_x, pos.1)).await;
+            }
+            if offset_x == pos.0 {
+                let _ = Text::with_text_style(
+                    menu.label,
+                    Point{x:64,y:64},
+                    character_style,
+                    center_aligned,
+                )
+                .draw(display);
+                let _ = display.flush().await;
+                break;
+            }
         }
         let _ = display.flush().await;
-        offset_x = if to_left { offset_x.0 + 4 } else { offset_x.0 - 4 }
+        offset_x = if dire >= 0 {
+            offset_x - 4
+        } else {
+            offset_x + 4
+        }
     }
 }
 
@@ -307,7 +380,7 @@ fn calc_start_pos(size: (i32, i32)) -> (i32, i32) {
     let w = DisplaySize128x64::WIDTH;
     let x = (w as i32 - size.0 as i32) / 2;
     let y = (h as i32 - size.1 as i32) / 2;
-    return (x, y);
+    return (x, 5);
 }
 
 #[inline]
