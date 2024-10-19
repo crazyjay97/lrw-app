@@ -25,7 +25,9 @@ use embassy_sync::{
 };
 use embedded_graphics::{
     image::Image,
-    mono_font::{ascii::FONT_8X13, iso_8859_1::FONT_4X6, iso_8859_5::FONT_6X10, MonoTextStyleBuilder},
+    mono_font::{
+        ascii::FONT_8X13, iso_8859_1::FONT_4X6, iso_8859_5::FONT_6X10, MonoTextStyleBuilder,
+    },
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
@@ -218,34 +220,6 @@ async fn dislay_init(i2c: embassy_stm32::i2c::I2c<'static, Async>) {
     {
         *DISPLAY.lock().await = Some(display);
     }
-    draw_menus(0).await;
-    loop {
-        let message: (Vec<u8, 1024>, usize, bool) = DISPLAY_CHANNEL.receive().await;
-        match core::str::from_utf8(&message.0[0..message.1]) {
-            Ok(_data) => {
-                if message.2 {
-                    draw_menus(1).await;
-                } else {
-                    draw_menus(-1).await;
-                }
-            }
-            Err(_) => {
-                info!("utf8 parse failed");
-            }
-        }
-    }
-}
-
-struct Menu {
-    bmp: Bmp<'static, BinaryColor>,
-    label: &'static str,
-}
-
-/// 单页菜单
-#[inline]
-async fn draw_menus<'a>(dire: i8) {
-    let mut current_idx = MENU_IDX.lock().await;
-    // 菜单列表
     let menus = [
         Menu {
             bmp: load_bmp(include_bytes!("../assets/info.bmp")).unwrap(),
@@ -276,6 +250,35 @@ async fn draw_menus<'a>(dire: i8) {
             label: "imessage",
         },
     ];
+    draw_menus(&menus, 0).await;
+    loop {
+        let message: (Vec<u8, 1024>, usize, bool) = DISPLAY_CHANNEL.receive().await;
+        match core::str::from_utf8(&message.0[0..message.1]) {
+            Ok(_data) => {
+                if message.2 {
+                    draw_menus(&menus, 1).await;
+                } else {
+                    draw_menus(&menus, -1).await;
+                }
+            }
+            Err(_) => {
+                info!("utf8 parse failed");
+            }
+        }
+    }
+}
+
+struct Menu {
+    bmp: Bmp<'static, BinaryColor>,
+    label: &'static str,
+}
+
+/// 单页菜单
+#[inline]
+async fn draw_menus<'a>(menus: &'a [Menu], dire: i8) {
+    let mut current_idx = MENU_IDX.lock().await;
+    // 菜单列表
+
     if (dire == 1 && *current_idx >= (menus.len() - 1)) || (dire == -1 && *current_idx == 0) {
         return;
     }
@@ -288,7 +291,7 @@ async fn draw_menus<'a>(dire: i8) {
     } else {
         *current_idx
     };
-
+    const STEP:i32 = 10;
     let mut display = DISPLAY.lock().await;
     let display = display.as_mut().unwrap();
     let menu = &menus[idx];
@@ -317,7 +320,7 @@ async fn draw_menus<'a>(dire: i8) {
         }
     };
     let bounding_box = display.bounding_box();
-    info!("bounding_box: {:?}",bounding_box);
+    info!("bounding_box: {:?}", bounding_box);
     let character_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
         .text_color(BinaryColor::On)
@@ -331,7 +334,7 @@ async fn draw_menus<'a>(dire: i8) {
         // move last
         if let Some(last) = last.as_mut() {
             draw_menu(display, &last.2.bmp, (last.0, last.1)).await;
-            last.0 = if dire >= 0 { last.0 - 4 } else { last.0 + 4 }
+            last.0 = if dire >= 0 { last.0 - STEP } else { last.0 + STEP }
         }
         // draw current menu
         if dire >= 0 {
@@ -341,7 +344,7 @@ async fn draw_menus<'a>(dire: i8) {
             if offset_x == pos.0 {
                 let _ = Text::with_text_style(
                     menu.label,
-                    Point{x:64,y:64},
+                    Point { x: 64, y: 64 },
                     character_style,
                     center_aligned,
                 )
@@ -356,7 +359,7 @@ async fn draw_menus<'a>(dire: i8) {
             if offset_x == pos.0 {
                 let _ = Text::with_text_style(
                     menu.label,
-                    Point{x:64,y:64},
+                    Point { x: 64, y: 64 },
                     character_style,
                     center_aligned,
                 )
@@ -367,9 +370,17 @@ async fn draw_menus<'a>(dire: i8) {
         }
         let _ = display.flush().await;
         offset_x = if dire >= 0 {
-            offset_x - 4
+            if offset_x - STEP < pos.0 {
+                offset_x - (offset_x -pos.0)
+            }else {
+                offset_x - STEP
+            }
         } else {
-            offset_x + 4
+            if offset_x + STEP > pos.0 {
+                offset_x + (pos.0 - offset_x)
+            }else {
+                offset_x + STEP
+            }
         }
     }
 }
