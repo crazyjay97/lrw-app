@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+mod active;
+
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
@@ -34,7 +36,7 @@ use embedded_graphics::{
 };
 use heapless::Vec;
 use panic_probe as _;
-use ssd1306::{prelude::*, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306Async};
+use ssd1306::{command::Command, prelude::*, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306Async};
 use tinybmp::Bmp;
 
 bind_interrupts!(struct Irqs {
