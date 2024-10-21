@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 
+use crate::fmt::*;
 use crate::{
     utils::{
         self,
@@ -7,7 +8,6 @@ use crate::{
     },
     KeyEvent, Ssd1306DisplayType, DISPLAY_CHANNEL,
 };
-use crate::fmt::*;
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::mode::Async;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
@@ -306,29 +306,9 @@ fn load_bmp<'a>(slice: &'a [u8]) -> Result<Bmp<'a, BinaryColor>, ()> {
             info!("bmp parse ok");
             return Ok(bmp);
         }
-        Err(e) => match e {
-            tinybmp::ParseError::UnsupportedBpp(_) => {
-                info!("bmp parse failed:UnsupportedBpp");
-            }
-            tinybmp::ParseError::UnexpectedEndOfFile => {
-                info!("bmp parse failed:UnexpectedEndOfFile");
-            }
-            tinybmp::ParseError::InvalidFileSignature(b) => {
-                info!("bmp parse failed:InvalidFileSignature {:02X}", b);
-            }
-            tinybmp::ParseError::UnsupportedCompressionMethod(_) => {
-                info!("bmp parse failed:UnsupportedCompressionMethod");
-            }
-            tinybmp::ParseError::UnsupportedHeaderLength(_) => {
-                info!("bmp parse failed:UnsupportedHeaderLength");
-            }
-            tinybmp::ParseError::UnsupportedChannelMasks => {
-                info!("bmp parse failed:UnsupportedChannelMasks");
-            }
-            tinybmp::ParseError::InvalidImageDimensions => {
-                info!("bmp parse failed:InvalidImageDimensions");
-            }
-        },
+        Err(e) => {
+            error!("{:?}", e);
+        }
     }
     Err(())
 }
