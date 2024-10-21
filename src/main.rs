@@ -40,8 +40,6 @@ bind_interrupts!(struct Irqs {
     LPUART1 => usart::InterruptHandler<peripherals::LPUART1>;
 });
 
-type UART1ReadType = Mutex<ThreadModeRawMutex, Option<UartRx<'static, Async>>>;
-type UART1WriteType = Mutex<ThreadModeRawMutex, Option<UartTx<'static, Async>>>;
 type KeyType = Mutex<ThreadModeRawMutex, Option<ExtiInput<'static>>>;
 type Ssd1306DisplayType = Ssd1306Async<
     I2CInterface<i2c::I2c<'static, Async>>,
@@ -52,8 +50,6 @@ type Ssd1306DisplayType = Ssd1306Async<
 type KeyEventChannelType = Channel<ThreadModeRawMutex, KeyEvent, 1>;
 type KeyEventSender = Sender<'static, ThreadModeRawMutex, KeyEvent, 1>;
 static DISPLAY_CHANNEL: KeyEventChannelType = Channel::new();
-static UART1_READ: UART1ReadType = Mutex::new(None);
-static UART1_WRITE: UART1WriteType = Mutex::new(None);
 static KEY1: KeyType = Mutex::new(None);
 static KEY2: KeyType = Mutex::new(None);
 static KEY3: KeyType = Mutex::new(None);
@@ -93,22 +89,18 @@ async fn main(spawner: Spawner) {
         let button = ExtiInput::new(p.PD9, p.EXTI9, Pull::Up);
         *KEY3.lock().await = Some(button);
     }
-    {
-        let mut config = usart::Config::default();
-        config.baudrate = 9600;
-        let uart = Uart::new(
-            p.LPUART1, p.PC0, p.PC1, Irqs, p.DMA2_CH6, p.DMA2_CH7, config,
-        );
-        if let Ok(uart) = uart {
-            let (tx, rx) = uart.split();
-            *UART1_WRITE.lock().await = Some(tx);
-            *UART1_READ.lock().await = Some(rx);
-        } else {
-            info!("uart init failed {:?}", uart.err());
-        }
+    let mut config = usart::Config::default();
+    config.baudrate = 9600;
+    let uart = Uart::new(
+        p.LPUART1, p.PC0, p.PC1, Irqs, p.DMA2_CH6, p.DMA2_CH7, config,
+    );
+    if let Ok(uart) = uart {
+        serial::init(uart).await;
+    } else {
+        info!("uart init failed {:?}", uart.err());
     }
     let i2c = init_display_i2c!(p);
-    unwrap!(spawner.spawn(serial_listen()));
+    unwrap!(spawner.spawn(serial::serial_listen()));
     unwrap!(spawner.spawn(key_handle(DISPLAY_CHANNEL.sender())));
     dislay_init(i2c).await;
 }
@@ -148,34 +140,6 @@ async fn key_handle(sender: KeyEventSender) {
     }
 }
 
-#[inline]
-async fn uart1_write(data: &[u8]) -> Result<(), ()> {
-    info!("uart write1");
-    let mut lock = UART1_WRITE.lock().await;
-    if lock.as_mut().unwrap().write(data).await.is_ok() {
-        info!("uart write ok");
-    } else {
-        return Err(());
-    }
-    Ok(())
-}
-
-#[embassy_executor::task]
-async fn serial_listen() {
-    loop {
-        let mut buf = [0u8; 1024];
-        let mut lock = UART1_READ.lock().await;
-        if let Some(uart) = lock.as_mut() {
-            info!("uart listen");
-            match uart.read_until_idle(&mut buf).await {
-                Ok(len) => {}
-                Err(e) => {
-                    error!("<< read failed {:?}", e);
-                }
-            }
-        }
-    }
-}
 
 fn display_pre_init<'a>(pd11: &'a mut PD11, pd12: &'a mut PD12) -> (Output<'a>, Output<'a>) {
     let mut oled_dc = Output::new(pd11, Level::Low, Speed::Low);
