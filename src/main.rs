@@ -2,8 +2,9 @@
 #![no_main]
 
 mod activity;
-mod utils;
 mod fmt;
+mod serial;
+mod utils;
 use activity::dislay_init;
 use embassy_executor::Spawner;
 use embassy_futures::select;
@@ -31,7 +32,6 @@ use embassy_sync::{
     mutex::Mutex,
 };
 
-use heapless::Vec;
 use ssd1306::{prelude::I2CInterface, size::DisplaySize128x64, Ssd1306Async};
 
 bind_interrupts!(struct Irqs {
@@ -108,7 +108,7 @@ async fn main(spawner: Spawner) {
         }
     }
     let i2c = init_display_i2c!(p);
-    //unwrap!(spawner.spawn(serial_listen(DISPLAY_CHANNEL.sender())));
+    unwrap!(spawner.spawn(serial_listen()));
     unwrap!(spawner.spawn(key_handle(DISPLAY_CHANNEL.sender())));
     dislay_init(i2c).await;
 }
@@ -161,21 +161,16 @@ async fn uart1_write(data: &[u8]) -> Result<(), ()> {
 }
 
 #[embassy_executor::task]
-async fn serial_listen(
-    sender: Sender<'static, ThreadModeRawMutex, (Vec<u8, 1024>, usize, bool), 2>,
-) {
+async fn serial_listen() {
     loop {
         let mut buf = [0u8; 1024];
         let mut lock = UART1_READ.lock().await;
         if let Some(uart) = lock.as_mut() {
             info!("uart listen");
             match uart.read_until_idle(&mut buf).await {
-                Ok(len) => {
-                    let b: Vec<u8, 1024> = Vec::from_slice(&mut buf).unwrap();
-                    //sender.send((b, len, false)).await;
-                }
+                Ok(len) => {}
                 Err(e) => {
-                    error!("<<<<<<<<<<< read failed {:?}", e);
+                    error!("<< read failed {:?}", e);
                 }
             }
         }
