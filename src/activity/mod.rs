@@ -306,8 +306,8 @@ fn load_bmp<'a>(slice: &'a [u8]) -> Result<Bmp<'a, BinaryColor>, ()> {
             info!("bmp parse ok");
             return Ok(bmp);
         }
-        Err(e) => {
-            error!("{:?}", e);
+        Err(_e) => {
+            error!("parse bmp failed");
         }
     }
     Err(())
