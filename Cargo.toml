@@ -1,5 +1,4 @@
 # This file was automatically generated.
-
 [package]
 edition = "2021"
 name = "lrw-app"
@@ -9,19 +8,17 @@ version = "0.1.0"
 cortex-m = { version = "0.7.2", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7.3"
 cortex-m-rtic = "1.1.4"
-defmt = "0.3.6"
-defmt-rtt = "0.4.0"
-panic-probe = { version = "0.3.1" }
+defmt = { version = "0.3.6", optional = true }
+defmt-rtt = { version = "0.4.0", optional = true }
+panic-probe = { version = "0.3.1", optional = true }
 embassy-embedded-hal = { version = "0.2.0", default-features = false }
 embassy-executor = { version = "0.6.0", git = "https://github.com/embassy-rs/embassy", features = [
-    "defmt",
     "arch-cortex-m",
-    "task-arena-size-10240",
+    "task-arena-size-20480",
     "executor-thread",
     "integrated-timers",
 ] }
 embassy-stm32 = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", features = [
-    "defmt",
     "stm32l476vg",
     "memory-x",
     "exti",
@@ -35,10 +32,13 @@ ssd1306 = { version = "0.9.0", features = [
     "async",
     "graphics",
 ], default-features = false }
-embassy-sync = { version = "0.6.0", features = ["defmt"] }
+embassy-sync = { version = "0.6.0" }
 heapless = "0.8.0"
-embedded-graphics = { version = "0.8.1", features = ["defmt"] }
+embedded-graphics = { version = "0.8.1" }
 tinybmp = { version = "0.6.0" }
+panic-halt = "0.2.0"
+
+
 [[bin]]
 name = "lrw-app"
 test = false
@@ -57,3 +57,18 @@ debug = false
 lto = "fat"
 opt-level = "z"
 incremental = true
+
+[features]
+default = ["debug"]
+defmt = ["dep:defmt"]
+defmt-rtt = ["dep:defmt-rtt"]
+panic-probe = ["dep:panic-probe"]
+debug = [
+    "defmt",
+    "defmt-rtt",
+    "panic-probe",
+    "embassy-stm32/defmt",
+    "embassy-sync/defmt",
+    "embassy-executor/defmt",
+    "embedded-graphics/defmt",
+]
