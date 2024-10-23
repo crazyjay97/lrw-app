@@ -12,6 +12,7 @@ use embassy_sync::{
     mutex::Mutex,
 };
 use embassy_time::{Duration, Timer};
+use heapless::String;
 
 type UART1ReadType = Mutex<ThreadModeRawMutex, Option<UartRx<'static, Async>>>;
 type UART1WriteType = Mutex<ThreadModeRawMutex, Option<UartTx<'static, Async>>>;
@@ -24,7 +25,6 @@ type SerialDataChannelType = Channel<ThreadModeRawMutex, ([u8; 1024], usize), 16
 type SerialSender = Sender<'static, ThreadModeRawMutex, ([u8; 1024], usize), 16>;
 static CHANNEL: SerialDataChannelType = Channel::new();
 static SERIAL_SENDER_CHANNEL: Mutex<ThreadModeRawMutex, Option<SerialSender>> = Mutex::new(None);
-
 pub enum Command {
     GetDevEui,
     GetVer,
@@ -77,10 +77,14 @@ pub async fn serial_listen() {
             info!("uart listen");
             match uart.read_until_idle(&mut buf).await {
                 Ok(len) => {
+                    info!("===================lock");
                     let mut sender = SERIAL_SENDER_CHANNEL.lock().await;
+                    info!("===================unlock");
                     if let Some(sender) = sender.as_mut() {
+                        info!("===================send");
                         sender.send((buf, len)).await;
                     }
+                    info!("===================fn");
                 }
                 Err(e) => {
                     error!("<< read failed {:?}", e);
@@ -91,22 +95,24 @@ pub async fn serial_listen() {
 }
 
 pub trait CommandResultTrait: Sized {
-    fn parse(data: &[u8]) -> Result<Self, ()>;
+    fn parse(buf: &[u8]) -> Result<Self, ()>;
 }
 
-pub struct GetDevEuiResult<'a>(&'a str);
+pub struct GetDevEuiResult(pub String<256>);
 
-impl<'a> CommandResultTrait for GetDevEuiResult<'a> {
-    fn parse(data: &[u8]) -> Result<GetDevEuiResult<'a>, ()> {
-        let mut buf: [u8; 1024] = [0; 1024];
-        buf[0..data.len()].copy_from_slice(data);
+impl CommandResultTrait for GetDevEuiResult {
+    fn parse(buf: &[u8]) -> Result<GetDevEuiResult, ()> {
+        let mut s: String<256> = String::new();
         let data = unsafe { core::str::from_utf8_unchecked(&buf) };
+        info!(">>> {}", data);
         if let Some(len) = data.find("+DEVEUI:") {
-            if len + len + 32 < data.len() {
-                return Ok(GetDevEuiResult(&data[len + 8..len + 8 + 32]));
+            info!(">>> LEN: {} IDX: {}", data.len(), len);
+            if len + 8 + 32 < data.len() {
+                let _ = s.push_str(&data[len + 8..len + 8 + 32]);
+                return Ok(GetDevEuiResult(s));
             }
         }
-        Ok(GetDevEuiResult(""))
+        Err(())
     }
 }
 
@@ -126,10 +132,12 @@ where
             Err::<T, ()>(())
         },
         async {
+            info!(">>> select");
             let receiver = CHANNEL.receiver();
             loop {
                 let (buf, len) = receiver.receive().await;
-                let data = T::parse(&buf[0..len]);
+                info!(">>> receiver");
+                let data = T::parse(&buf[..len]);
                 if data.is_ok() {
                     return Ok::<T, ()>(data.unwrap());
                 }

@@ -67,6 +67,7 @@ debug = [
     "defmt",
     "defmt-rtt",
     "panic-probe",
+    "heapless/defmt-03",
     "embassy-stm32/defmt",
     "embassy-sync/defmt",
     "embassy-executor/defmt",
