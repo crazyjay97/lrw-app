@@ -17,7 +17,7 @@ use embassy_stm32::{
     peripherals::{self, PD11, PD12},
     rcc::{self, Pll},
     time::Hertz,
-    usart::{self, Uart, UartRx, UartTx},
+    usart::{self, Uart},
     Config,
 };
 use fmt::*;
@@ -139,7 +139,6 @@ async fn key_handle(sender: KeyEventSender) {
         .await;
     }
 }
-
 
 fn display_pre_init<'a>(pd11: &'a mut PD11, pd12: &'a mut PD12) -> (Output<'a>, Output<'a>) {
     let mut oled_dc = Output::new(pd11, Level::Low, Speed::Low);

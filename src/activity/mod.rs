@@ -1,5 +1,7 @@
 use core::cell::RefCell;
 
+mod device_info;
+mod factory;
 use crate::fmt::*;
 use crate::{
     utils::{
@@ -8,9 +10,11 @@ use crate::{
     },
     KeyEvent, Ssd1306DisplayType, DISPLAY_CHANNEL,
 };
+use device_info::DeviceInfoActivity;
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::mode::Async;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
+use embedded_graphics::mono_font::iso_8859_7::FONT_10X20;
 use embedded_graphics::{
     image::Image,
     mono_font::{iso_8859_5::FONT_6X10, MonoTextStyleBuilder},
@@ -18,6 +22,7 @@ use embedded_graphics::{
     prelude::*,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
+use factory::FactoryActivity;
 use ssd1306::{prelude::*, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306Async};
 use tinybmp::Bmp;
 
@@ -45,6 +50,15 @@ impl App {
             AppActivity::EuiQrCode(ref eui_qr_code_activity) => {
                 eui_qr_code_activity.show().await;
             }
+            AppActivity::DeviceInfo(device_info_activity) => {
+                device_info_activity.show().await;
+            }
+            AppActivity::Factory(factory_activity) => {
+                factory_activity.show().await;
+            }
+            AppActivity::Todo(todo_activity) => {
+                todo_activity.show().await;
+            }
         }
     }
 
@@ -55,6 +69,15 @@ impl App {
             }
             AppActivity::EuiQrCode(ref eui_qr_code_activity) => {
                 eui_qr_code_activity.key_handle(e, &self).await;
+            }
+            AppActivity::DeviceInfo(device_info_activity) => {
+                device_info_activity.key_handle(e, &self).await;
+            }
+            AppActivity::Factory(factory_activity) => {
+                factory_activity.key_handle(e, &self).await;
+            }
+            AppActivity::Todo(todo_activity) => {
+                todo_activity.key_handle(e, &self).await;
             }
         }
         if let Some(next_activity) = self.next_activity.take() {
@@ -73,6 +96,9 @@ impl App {
 pub enum AppActivity {
     Main(MainActivity),
     EuiQrCode(EuiQrCodeActivity),
+    DeviceInfo(DeviceInfoActivity),
+    Factory(FactoryActivity),
+    Todo(TodoActivity),
 }
 
 trait Activity {
@@ -81,18 +107,36 @@ trait Activity {
 }
 
 pub struct MainActivity {
-    menus: [Menu; 7],
+    menus: [Menu; Self::MENU_LEN],
     menu_index: RefCell<usize>,
 }
 
 impl Activity for MainActivity {
     async fn key_handle(&self, e: KeyEvent, app: &App) {
         match e {
-            KeyEvent::Prev => self.draw_menus(-1).await,
-            KeyEvent::Next => self.draw_menus(1).await,
+            KeyEvent::Prev => self.draw_menus(1).await,
+            KeyEvent::Next => self.draw_menus(-1).await,
             KeyEvent::Confirm => {
-                app.navigate_to(AppActivity::EuiQrCode(EuiQrCodeActivity::new()))
-                    .await;
+                let idx = self.menu_index.borrow();
+                let menu = &self.menus[*idx];
+                match menu.label {
+                    "info" => {
+                        app.navigate_to(AppActivity::DeviceInfo(DeviceInfoActivity::new()))
+                            .await;
+                    }
+                    "device code" => {
+                        app.navigate_to(AppActivity::EuiQrCode(EuiQrCodeActivity::new()))
+                            .await;
+                    }
+                    "factory" => {
+                        app.navigate_to(AppActivity::Factory(FactoryActivity::new()))
+                            .await;
+                    }
+                    _ => {
+                        app.navigate_to(AppActivity::Todo(TodoActivity::new()))
+                            .await;
+                    }
+                }
             }
             KeyEvent::Back => {}
         }
@@ -104,35 +148,24 @@ impl Activity for MainActivity {
 }
 
 impl MainActivity {
+    const MENU_LEN: usize = 4;
     fn new() -> Self {
-        let menus = [
+        let menus: [Menu; Self::MENU_LEN] = [
             Menu {
                 bmp: load_bmp(include_bytes!("../../assets/info.bmp")).unwrap(),
                 label: "info",
             },
             Menu {
                 bmp: load_bmp(include_bytes!("../../assets/app.bmp")).unwrap(),
-                label: "console",
+                label: "app",
             },
             Menu {
-                bmp: load_bmp(include_bytes!("../../assets/info.bmp")).unwrap(),
-                label: "debug",
+                bmp: load_bmp(include_bytes!("../../assets/qrcode.bmp")).unwrap(),
+                label: "device code",
             },
             Menu {
-                bmp: load_bmp(include_bytes!("../../assets/app.bmp")).unwrap(),
-                label: "sos",
-            },
-            Menu {
-                bmp: load_bmp(include_bytes!("../../assets/info.bmp")).unwrap(),
-                label: "find my",
-            },
-            Menu {
-                bmp: load_bmp(include_bytes!("../../assets/app.bmp")).unwrap(),
-                label: "app store",
-            },
-            Menu {
-                bmp: load_bmp(include_bytes!("../../assets/info.bmp")).unwrap(),
-                label: "imessage",
+                bmp: load_bmp(include_bytes!("../../assets/factory.bmp")).unwrap(),
+                label: "factory",
             },
         ];
         Self {
@@ -142,7 +175,7 @@ impl MainActivity {
     }
     async fn draw_menus<'a>(&self, dire: i8) {
         let mut current_idx = self.menu_index.borrow_mut();
-        let menus: &[Menu; 7] = &self.menus;
+        let menus: &[Menu; Self::MENU_LEN] = &self.menus;
         if (dire == 1 && *current_idx >= (menus.len() - 1)) || (dire == -1 && *current_idx == 0) {
             return;
         }
@@ -377,6 +410,58 @@ impl Activity for EuiQrCodeActivity {
                 }
             }
         }
+        let _ = display.flush().await;
+    }
+}
+
+struct TodoActivity();
+
+impl TodoActivity {
+    fn new() -> Self {
+        Self()
+    }
+}
+
+impl Activity for TodoActivity {
+    async fn key_handle(&self, e: KeyEvent, app: &App) {
+        match e {
+            KeyEvent::Next => {
+                //app.show().await;
+            }
+            KeyEvent::Prev => {
+                //app.show().await;
+            }
+            KeyEvent::Confirm => {
+                app.navigate_to(AppActivity::Main(MainActivity::new()))
+                    .await
+            }
+            KeyEvent::Back => {
+                //app.show().await;
+            }
+        }
+    }
+
+    async fn show(&self) {
+        let mut display = DISPLAY.lock().await;
+        let display = display.as_mut().unwrap();
+        let _ = display.clear(BinaryColor::Off);
+        let character_style = MonoTextStyleBuilder::new()
+            .font(&FONT_10X20)
+            .text_color(BinaryColor::On)
+            .build();
+        let left_aligned = TextStyleBuilder::new()
+            .alignment(Alignment::Center)
+            .baseline(Baseline::Middle)
+            .build();
+        Text::with_text_style(
+            "TODO",
+            display.bounding_box().center(),
+            character_style,
+            left_aligned,
+        )
+        .draw(display)
+        .unwrap_or(Point { x: 0, y: 0 });
+
         let _ = display.flush().await;
     }
 }
