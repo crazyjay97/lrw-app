@@ -1,4 +1,4 @@
-use core::borrow::Borrow;
+use core::str::FromStr;
 
 use crate::fmt::*;
 use embassy_futures::select::{select, Either};
@@ -29,6 +29,7 @@ pub enum Command {
     GetDevEui,
     GetVer,
     GetDevAddr,
+    GetAppEui,
     SetAppkey,
     SetAppEui,
     SetDevAddr,
@@ -42,6 +43,7 @@ impl Command {
             Command::GetDevEui => b"at+deveui?\r\n",
             Command::GetVer => b"at+ver?\r\n",
             Command::GetDevAddr => b"at+devaddr?\r\n",
+            Command::GetAppEui => b"at+appeui?\r\n",
             Command::SetAppkey => b"set appkey\r\n",
             Command::SetAppEui => b"set app-eui\r\n",
             Command::SetDevAddr => b"set app-eui\r\n",
@@ -77,14 +79,10 @@ pub async fn serial_listen() {
             info!("uart listen");
             match uart.read_until_idle(&mut buf).await {
                 Ok(len) => {
-                    info!("===================lock");
                     let mut sender = SERIAL_SENDER_CHANNEL.lock().await;
-                    info!("===================unlock");
                     if let Some(sender) = sender.as_mut() {
-                        info!("===================send");
                         sender.send((buf, len)).await;
                     }
-                    info!("===================fn");
                 }
                 Err(e) => {
                     error!("<< read failed {:?}", e);
@@ -98,19 +96,75 @@ pub trait CommandResultTrait: Sized {
     fn parse(buf: &[u8]) -> Result<Self, ()>;
 }
 
-pub struct GetDevEuiResult(pub String<256>);
+pub struct GetDevEuiResult(pub String<16>);
 
 impl CommandResultTrait for GetDevEuiResult {
     fn parse(buf: &[u8]) -> Result<GetDevEuiResult, ()> {
         let mut s: String<256> = String::new();
         let data = unsafe { core::str::from_utf8_unchecked(&buf) };
-        info!(">>> {}", data);
         if let Some(len) = data.find("+DEVEUI:") {
-            info!(">>> LEN: {} IDX: {}", data.len(), len);
-            if len + 8 + 32 < data.len() {
-                let _ = s.push_str(&data[len + 8..len + 8 + 32]);
-                return Ok(GetDevEuiResult(s));
+            if len + 32 < data.len() {
+                let _ = s.push_str(&data[len + 9..len + 32]);
+                while let Some(idx) = s.find(" ") {
+                    s.remove(idx);
+                }
+                let deveui: String<16> = String::from_str(s.as_str())
+                    .unwrap_or(String::<16>::from_str("0000000000000000").unwrap());
+                return Ok(GetDevEuiResult(deveui));
             }
+        }
+        Err(())
+    }
+}
+
+/// +DEVADDR: BE75D8B7
+pub struct GetDevAddrResult(pub String<8>);
+
+impl CommandResultTrait for GetDevAddrResult {
+    fn parse(buf: &[u8]) -> Result<GetDevAddrResult, ()> {
+        let mut s: String<8> = String::new();
+        let data = unsafe { core::str::from_utf8_unchecked(&buf) };
+        if let Some(len) = data.find("+DEVADDR:") {
+            if len + 18 < data.len() {
+                let _ = s.push_str(&data[len + 10..len + 18]);
+                return Ok(GetDevAddrResult(s));
+            }
+        }
+        Err(())
+    }
+}
+
+/// +APPEUI: 00 95 69 06 00 01 28 9C
+pub struct GetAppEuiResult(pub String<16>);
+
+impl CommandResultTrait for GetAppEuiResult {
+    fn parse(buf: &[u8]) -> Result<GetAppEuiResult, ()> {
+        let mut s: String<256> = String::new();
+        let data = unsafe { core::str::from_utf8_unchecked(&buf) };
+        if let Some(len) = data.find("+APPEUI:") {
+            if len + 32 < data.len() {
+                let _ = s.push_str(&data[len + 9..len + 32]);
+                while let Some(idx) = s.find(" ") {
+                    s.remove(idx);
+                }
+                let deveui: String<16> = String::from_str(s.as_str())
+                    .unwrap_or(String::<16>::from_str("0000000000000000").unwrap());
+                return Ok(GetAppEuiResult(deveui));
+            }
+        }
+        Err(())
+    }
+}
+
+pub struct GetVerResult(pub String<128>);
+
+impl CommandResultTrait for GetVerResult {
+    fn parse(buf: &[u8]) -> Result<GetVerResult, ()> {
+        let mut s: String<128> = String::new();
+        let data = unsafe { core::str::from_utf8_unchecked(&buf) };
+        if let Some(len) = data.find("+VER:") {
+            let _ = s.push_str(&data[len + 5..(buf.len() - 6)]);
+            return Ok(GetVerResult(s));
         }
         Err(())
     }
@@ -132,11 +186,13 @@ where
             Err::<T, ()>(())
         },
         async {
-            info!(">>> select");
             let receiver = CHANNEL.receiver();
             loop {
                 let (buf, len) = receiver.receive().await;
-                info!(">>> receiver");
+                info!(
+                    ">>> receiver {}",
+                    core::str::from_utf8(&buf[..len]).unwrap()
+                );
                 let data = T::parse(&buf[..len]);
                 if data.is_ok() {
                     return Ok::<T, ()>(data.unwrap());

@@ -6,14 +6,14 @@ use embedded_graphics::{
     prelude::*,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
+use heapless::String;
 
-use crate::Ssd1306DisplayType;
+use crate::{lorawan::LORAWAN, Ssd1306DisplayType};
 
 use super::{info, Activity, DISPLAY};
 
 pub struct DeviceInfoActivity {
     label_list: &'static [&'static str],
-    value_list: &'static [&'static str],
     current_index: RefCell<usize>,
     start: RefCell<usize>,
     end: RefCell<usize>,
@@ -47,19 +47,8 @@ impl DeviceInfoActivity {
     pub fn new() -> Self {
         Self {
             label_list: &[
-                "State", "DevEui", "Version", "DevAddr", "Class", "Rx2", "Band", "Appskey",
+                "Type", "State", "DevEui", "Appeui", "DevAddr", "Version", "Class", "Appskey",
                 "Newkskey",
-            ],
-            value_list: &[
-                "Joined",
-                "AABBCCDDEEFF1122",
-                "1.0.1",
-                "AABBCCDD",
-                "A",
-                "86810000",
-                "AU915",
-                "AABBCCDDEEFF1122\nAABBCCDDEEFF1122",
-                "AABBCCDDEEFF1122\nAABBCCDDEEFF1122",
             ],
             current_index: RefCell::new(0),
             start: RefCell::new(0),
@@ -108,7 +97,10 @@ impl DeviceInfoActivity {
             item_max += 1;
         }
         *end = min(*start + item_max as usize, self.label_list.len());
-        info!("selected: {} start: {} end: {} item_max: {}", *selected, *start, *end, item_max);
+        info!(
+            "selected: {} start: {} end: {} item_max: {}",
+            *selected, *start, *end, item_max
+        );
         let show_next = Self::WIDTH - (total_width + ((item_max - 1) * Self::LABEL_PADDING))
             > Self::LABEL_PADDING;
         let final_end = if show_next {
@@ -118,18 +110,68 @@ impl DeviceInfoActivity {
         };
         self.draw_and_move(&mut display, *start, final_end, *selected)
             .await;
-        let value = self.value_list[*selected];
+        let label = self.label_list[*selected];
         let character_style = MonoTextStyleBuilder::new()
             .font(&FONT_6X10)
             .text_color(BinaryColor::On)
             .build();
         let left_aligned = TextStyleBuilder::new()
             .alignment(Alignment::Left)
-            .baseline(Baseline::Top)
+            .baseline(Baseline::Middle)
             .build();
-        Text::with_text_style(value, Point { x: 0, y: 32 }, character_style, left_aligned)
-            .draw(display)
-            .unwrap_or(Point { x: 0, y: 0 });
+        let lrw = LORAWAN.lock().await;
+        let lrw = lrw.as_ref().unwrap();
+        let value = match label {
+            "Type" => lrw.join_type.as_str(),
+            "State" => lrw.state.as_str(),
+            "DevEui" => lrw.deveui.as_ref().unwrap().as_str(),
+            "Appeui" => {
+                if lrw.appeui.is_some() {
+                    lrw.appeui.as_ref().unwrap().as_str()
+                } else {
+                    ""
+                }
+            }
+            "Version" => {
+                if lrw.version.is_some() {
+                    lrw.version.as_ref().unwrap().as_str()
+                } else {
+                    ""
+                }
+            }
+            "DevAddr" => {
+                if lrw.devaddr.is_some() {
+                    lrw.devaddr.as_ref().unwrap().as_str()
+                } else {
+                    ""
+                }
+            }
+            "Class" => lrw.class.as_str(),
+            "Appskey" => {
+                if lrw.appskey.is_some() {
+                    lrw.appskey.as_ref().unwrap().as_str()
+                } else {
+                    ""
+                }
+            }
+            "Newkskey" => {
+                if lrw.nwkskey.is_some() {
+                    lrw.nwkskey.as_ref().unwrap().as_str()
+                } else {
+                    ""
+                }
+            }
+            _ => lrw.deveui.as_ref().unwrap().as_str(),
+        };
+        let text = wrap_text_by_char::<256>(&value);
+        Text::with_text_style(
+            text.as_str(),
+            Point { x: 0, y: 32 },
+            character_style,
+            left_aligned,
+        )
+        .draw(display)
+        .unwrap_or(Point { x: 0, y: 0 });
         let _ = display.flush().await;
     }
 
@@ -180,4 +222,24 @@ impl DeviceInfoActivity {
             .draw(display)
             .unwrap_or(Point { x: 0, y: 0 })
     }
+}
+
+fn wrap_text_by_char<const N: usize>(text: &str) -> String<N> {
+    let max_chars_per_line = (DeviceInfoActivity::WIDTH / DeviceInfoActivity::FONT_WIDTH) as usize;
+    let mut lines: String<N> = String::new();
+    let mut current_line: String<32> = String::new();
+
+    for (i, c) in text.chars().enumerate() {
+        current_line.push(c).unwrap();
+        if (i + 1) % max_chars_per_line == 0 {
+            lines.push_str(current_line.as_str()).unwrap();
+            lines.push('\n').unwrap();
+            current_line.clear();
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push_str(current_line.as_str()).unwrap();
+        lines.push('\n').unwrap();
+    }
+    lines
 }

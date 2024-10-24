@@ -3,6 +3,7 @@
 
 mod activity;
 mod fmt;
+mod lorawan;
 mod serial;
 mod utils;
 use activity::dislay_init;
@@ -14,13 +15,14 @@ use embassy_stm32::{
     gpio::{Level, Output, Pull, Speed},
     i2c,
     mode::Async,
-    peripherals::{self, PD11, PD12},
+    peripherals::{self, PA0, PA5, PD11, PD12},
     rcc::{self, Pll},
     time::Hertz,
     usart::{self, Uart},
     Config,
 };
 use fmt::*;
+use lorawan::init_lorawan_info;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 #[cfg(feature = "defmt")]
@@ -53,6 +55,8 @@ static DISPLAY_CHANNEL: KeyEventChannelType = Channel::new();
 static KEY1: KeyType = Mutex::new(None);
 static KEY2: KeyType = Mutex::new(None);
 static KEY3: KeyType = Mutex::new(None);
+static MODE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
+static WAKE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
 
 enum KeyEvent {
     Prev,
@@ -81,6 +85,7 @@ async fn main(spawner: Spawner) {
     config.rcc.mux.i2c1sel = rcc::mux::I2c1sel::SYS;
     let mut p = embassy_stm32::init(config);
     let (_oled_dc, _oled_rst) = display_pre_init(&mut p.PD11, &mut p.PD12);
+    init_mode_wake(p.PA0, p.PA5).await;
     {
         let button = ExtiInput::new(p.PD8, p.EXTI8, Pull::Up);
         *KEY1.lock().await = Some(button);
@@ -102,6 +107,7 @@ async fn main(spawner: Spawner) {
     let i2c = init_display_i2c!(p);
     unwrap!(spawner.spawn(serial::serial_listen()));
     unwrap!(spawner.spawn(key_handle(DISPLAY_CHANNEL.sender())));
+    let _ = init_lorawan_info().await;
     dislay_init(i2c).await;
 }
 
@@ -148,6 +154,15 @@ fn display_pre_init<'a>(pd11: &'a mut PD11, pd12: &'a mut PD12) -> (Output<'a>, 
     oled_rst.set_low();
     oled_rst.set_high();
     return (oled_dc, oled_rst);
+}
+
+async fn init_mode_wake(pa0: PA0, pa5: PA5) {
+    let mut mode = Output::new(pa0, Level::Low, Speed::Low);
+    let mut wake = Output::new(pa5, Level::Low, Speed::Low);
+    mode.set_high();
+    wake.set_high();
+    *MODE.lock().await = Some(mode);
+    *WAKE.lock().await = Some(wake);
 }
 
 #[macro_export]

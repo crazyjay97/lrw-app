@@ -1,4 +1,7 @@
-use crate::{info, serial::{send_command, uart1_write, Command, GetDevEuiResult}};
+use crate::{
+    info,
+    serial::{send_command, uart1_write, Command, GetDevEuiResult},
+};
 
 use embassy_time::Duration;
 use embedded_graphics::{
@@ -22,14 +25,13 @@ impl Activity for FactoryActivity {
     async fn key_handle(&self, e: crate::KeyEvent, app: &super::App) {
         match e {
             crate::KeyEvent::Prev => {
-                let _ = uart1_write(b"at+deveui?\r\n").await;
-                // let eui: Result<GetDevEuiResult, ()> =
-                //     send_command(Command::GetDevEui, Duration::from_millis(300)).await;
-                // if let Ok(eui) = eui {
-                //     info!("eui: {:?}", eui.0);
-                // }else {
-                //     info!("eui: failed");
-                // }
+                let eui: Result<GetDevEuiResult, ()> =
+                    send_command(Command::GetDevEui, Duration::from_millis(300)).await;
+                if let Ok(eui) = eui {
+                    info!("eui: {:?}", eui.0);
+                } else {
+                    info!("eui: failed");
+                }
             }
             crate::KeyEvent::Next => {}
             crate::KeyEvent::Confirm => {}
