@@ -2,7 +2,8 @@ use core::cell::RefCell;
 
 mod device_info;
 mod factory;
-use crate::fmt::*;
+mod light;
+use crate::{fmt::*, lorawan};
 use crate::{
     utils::{
         self,
@@ -23,6 +24,7 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use factory::FactoryActivity;
+use light::LightActivity;
 use ssd1306::{prelude::*, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306Async};
 use tinybmp::Bmp;
 
@@ -59,6 +61,9 @@ impl App {
             AppActivity::Todo(todo_activity) => {
                 todo_activity.show().await;
             }
+            AppActivity::Light(light_activity) => {
+                light_activity.show().await;
+            }
         }
     }
 
@@ -79,6 +84,9 @@ impl App {
             AppActivity::Todo(todo_activity) => {
                 todo_activity.key_handle(e, &self).await;
             }
+            AppActivity::Light(light_activity) => {
+                light_activity.key_handle(e, &self).await;
+            }
         }
         if let Some(next_activity) = self.next_activity.take() {
             {
@@ -98,6 +106,7 @@ pub enum AppActivity {
     EuiQrCode(EuiQrCodeActivity),
     DeviceInfo(DeviceInfoActivity),
     Factory(FactoryActivity),
+    Light(LightActivity),
     Todo(TodoActivity),
 }
 
@@ -130,6 +139,10 @@ impl Activity for MainActivity {
                     }
                     "factory" => {
                         app.navigate_to(AppActivity::Factory(FactoryActivity::new()))
+                            .await;
+                    }
+                    "app" => {
+                        app.navigate_to(AppActivity::Light(LightActivity::new()))
                             .await;
                     }
                     _ => {
@@ -378,9 +391,11 @@ impl Activity for EuiQrCodeActivity {
         let display = display.as_mut().unwrap();
         let mut outbuffer = [0u8; Version::MAX.buffer_len()];
         let mut tempbuffer = [0u8; Version::MAX.buffer_len()];
-
+        let lorawan_info = lorawan::LORAWAN.lock().await;
+        let lorawan_info = lorawan_info.as_ref().unwrap();
+        let eui = lorawan_info.deveui.as_ref().unwrap();
         let qr = utils::qrcode::QrCode::encode_text(
-            "Hello, world!",
+            eui.as_str(),
             &mut tempbuffer,
             &mut outbuffer,
             QrCodeEcc::Low,
@@ -414,7 +429,7 @@ impl Activity for EuiQrCodeActivity {
     }
 }
 
-struct TodoActivity();
+pub struct TodoActivity();
 
 impl TodoActivity {
     fn new() -> Self {

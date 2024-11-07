@@ -12,10 +12,10 @@ use embassy_futures::select;
 use embassy_stm32::{
     bind_interrupts,
     exti::ExtiInput,
-    gpio::{Level, Output, Pull, Speed},
+    gpio::{Input, Level, Output, OutputOpenDrain, Pull, Speed},
     i2c,
     mode::Async,
-    peripherals::{self, PA0, PA5, PD11, PD12},
+    peripherals::{self, PA0, PA5, PA6, PA7, PD11, PD12},
     rcc::{self, Pll},
     time::Hertz,
     usart::{self, Uart},
@@ -43,6 +43,7 @@ bind_interrupts!(struct Irqs {
 });
 
 type KeyType = Mutex<ThreadModeRawMutex, Option<ExtiInput<'static>>>;
+type InputType = Mutex<ThreadModeRawMutex, Option<Input<'static>>>;
 type Ssd1306DisplayType = Ssd1306Async<
     I2CInterface<i2c::I2c<'static, Async>>,
     DisplaySize128x64,
@@ -57,6 +58,8 @@ static KEY2: KeyType = Mutex::new(None);
 static KEY3: KeyType = Mutex::new(None);
 static MODE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
 static WAKE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
+static BUSY: InputType = Mutex::new(None);
+static STAT: InputType = Mutex::new(None);
 
 enum KeyEvent {
     Prev,
@@ -87,6 +90,12 @@ async fn main(spawner: Spawner) {
     let (_oled_dc, _oled_rst) = display_pre_init(&mut p.PD11, &mut p.PD12);
     init_mode_wake(p.PA0, p.PA5).await;
     {
+        let busy = Input::new(p.PA6, Pull::Up);
+        info!("busy {:?}", busy.is_low());
+        *BUSY.lock().await = Some(busy);
+        let state = Input::new(p.PA7, Pull::Up);
+        info!("mode {:?}", state.is_low());
+        *STAT.lock().await = Some(state);
         let button = ExtiInput::new(p.PD8, p.EXTI8, Pull::Up);
         *KEY1.lock().await = Some(button);
         let button = ExtiInput::new(p.PD10, p.EXTI10, Pull::Up);

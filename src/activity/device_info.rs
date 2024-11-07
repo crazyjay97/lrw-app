@@ -1,7 +1,7 @@
 use core::{cell::RefCell, cmp::min};
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
+    mono_font::{ascii::FONT_6X13, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
@@ -112,7 +112,7 @@ impl DeviceInfoActivity {
             .await;
         let label = self.label_list[*selected];
         let character_style = MonoTextStyleBuilder::new()
-            .font(&FONT_6X10)
+            .font(&FONT_6X13)
             .text_color(BinaryColor::On)
             .build();
         let left_aligned = TextStyleBuilder::new()
@@ -199,7 +199,7 @@ impl DeviceInfoActivity {
         selected: bool,
     ) -> Point {
         let character_style = MonoTextStyleBuilder::new()
-            .font(&FONT_6X10)
+            .font(&FONT_6X13)
             .text_color(if selected {
                 BinaryColor::Off
             } else {

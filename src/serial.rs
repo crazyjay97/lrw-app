@@ -1,3 +1,4 @@
+use core::fmt::Write;
 use core::str::FromStr;
 
 use crate::fmt::*;
@@ -12,7 +13,7 @@ use embassy_sync::{
     mutex::Mutex,
 };
 use embassy_time::{Duration, Timer};
-use heapless::String;
+use heapless::{String, Vec};
 
 type UART1ReadType = Mutex<ThreadModeRawMutex, Option<UartRx<'static, Async>>>;
 type UART1WriteType = Mutex<ThreadModeRawMutex, Option<UartTx<'static, Async>>>;
@@ -30,25 +31,105 @@ pub enum Command {
     GetVer,
     GetDevAddr,
     GetAppEui,
-    SetAppkey,
-    SetAppEui,
-    SetDevAddr,
+    SetAppkey(String<32>),
+    SetAppEui(String<16>),
     SetAppSKey,
     SetNwkSKey,
+    Factory,
+    Save,
+    Reset,
+    Debug,
+    SetClassC,
+    SetBand(u8),
+    SetChmask(String<32>),
+    SetRx2(u8, u32),
+    SetGroupDevAddr(String<8>, String<32>, String<32>),
+}
+
+pub enum GPIO {
+    P0,
+    P1,
+    P2,
+    P3,
+}
+
+impl GPIO {
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            GPIO::P0 => 0,
+            GPIO::P1 => 1,
+            GPIO::P2 => 2,
+            GPIO::P3 => 3,
+        }
+    }
+}
+
+pub enum IOState {
+    High,
+    Low,
+}
+
+impl IOState {
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            IOState::High => 1,
+            IOState::Low => 0,
+        }
+    }
 }
 
 impl Command {
-    fn as_bytes(&self) -> &[u8] {
+    fn as_bytes(&self) -> Vec<u8, 128> {
         match self {
-            Command::GetDevEui => b"at+deveui?\r\n",
-            Command::GetVer => b"at+ver?\r\n",
-            Command::GetDevAddr => b"at+devaddr?\r\n",
-            Command::GetAppEui => b"at+appeui?\r\n",
-            Command::SetAppkey => b"set appkey\r\n",
-            Command::SetAppEui => b"set app-eui\r\n",
-            Command::SetDevAddr => b"set app-eui\r\n",
-            Command::SetAppSKey => b"set app-eui\r\n",
-            Command::SetNwkSKey => b"set app-eui\r\n",
+            Command::Factory => Vec::<u8, 128>::from_slice(b"at+factory\r\n").unwrap(),
+            Command::GetDevEui => Vec::<u8, 128>::from_slice(b"at+deveui?\r\n").unwrap(),
+            Command::GetVer => Vec::<u8, 128>::from_slice(b"at+ver?\r\n").unwrap(),
+            Command::GetDevAddr => Vec::<u8, 128>::from_slice(b"at+devaddr?\r\n").unwrap(),
+            Command::GetAppEui => Vec::<u8, 128>::from_slice(b"at+appeui?\r\n").unwrap(),
+            Command::SetAppkey(appkey) => {
+                let mut buf = Vec::<u8, 128>::from_slice(b"at+appkey=").unwrap();
+                let _ = buf.extend_from_slice(appkey.as_bytes());
+                let _ = buf.extend_from_slice(b"\r\n");
+                buf
+            }
+            Command::SetAppEui(appeui) => {
+                let mut buf = Vec::<u8, 128>::from_slice(b"at+appeui=").unwrap();
+                let _ = buf.extend_from_slice(appeui.as_bytes());
+                let _ = buf.extend_from_slice(b"\r\n");
+                buf
+            }
+            Command::SetAppSKey => Vec::<u8, 128>::from_slice(b"at+deveui?\r\n").unwrap(),
+            Command::SetNwkSKey => Vec::<u8, 128>::from_slice(b"at+deveui?\r\n").unwrap(),
+            Command::Save => Vec::<u8, 128>::from_slice(b"at+save\r\n").unwrap(),
+            Command::Reset => Vec::<u8, 128>::from_slice(b"at+reset\r\n").unwrap(),
+            Command::Debug => Vec::<u8, 128>::from_slice(b"at+debug=0\r\n").unwrap(),
+            Command::SetClassC => Vec::<u8, 128>::from_slice(b"at+class=2\r\n").unwrap(),
+            Command::SetBand(baud) => {
+                let mut cmd = String::<128>::new();
+                let _ = write!(cmd, "at+band={}\r\n", baud);
+                Vec::<u8, 128>::from_slice(cmd.as_bytes()).unwrap()
+            }
+            Command::SetChmask(cmask) => {
+                let mut cmd = String::<128>::new();
+                let _ = write!(cmd, "at+chmask={}\r\n", cmask.as_str());
+                Vec::<u8, 128>::from_slice(cmd.as_bytes()).unwrap()
+            }
+            Command::SetRx2(dr, freq) => {
+                let mut cmd = String::<128>::new();
+                let _ = write!(cmd, "at+rx2={},{}\r\n", dr, freq);
+                Vec::<u8, 128>::from_slice(cmd.as_bytes()).unwrap()
+            }
+            Command::SetGroupDevAddr(addr, appskey, nwkwkey) => {
+                let mut cmd = String::<128>::new();
+                let _ = write!(
+                    cmd,
+                    "at+devaddr={},4,0,{},{}\r\n",
+                    addr.as_str(),
+                    appskey.as_str(),
+                    nwkwkey.as_str()
+                );
+                Vec::<u8, 128>::from_slice(cmd.as_bytes()).unwrap()
+            }
         }
     }
 }
@@ -170,16 +251,28 @@ impl CommandResultTrait for GetVerResult {
     }
 }
 
+pub struct VoidResult();
+
+impl CommandResultTrait for VoidResult {
+    fn parse(_buf: &[u8]) -> Result<VoidResult, ()> {
+        Ok(VoidResult())
+    }
+}
+
 pub async fn send_command<T>(command: Command, timeout: Duration) -> Result<T, ()>
 where
     T: CommandResultTrait,
 {
+    info!(
+        "send command {:?}",
+        core::str::from_utf8(&command.as_bytes()).unwrap()
+    );
     CHANNEL.clear();
     {
         let mut sender = SERIAL_SENDER_CHANNEL.lock().await;
         *sender = Some(CHANNEL.sender());
     }
-    let _ = uart1_write(command.as_bytes()).await;
+    let _ = uart1_write(command.as_bytes().as_slice()).await;
     let rs = select(
         async {
             Timer::after(timeout).await;
@@ -209,4 +302,14 @@ where
         Either::First(_) => Err(()),
         Either::Second(data) => data,
     }
+}
+
+pub async fn rx_listen() -> ([u8; 1024], usize) {
+    CHANNEL.clear();
+    {
+        let mut sender = SERIAL_SENDER_CHANNEL.lock().await;
+        *sender = Some(CHANNEL.sender());
+    }
+    let receiver = CHANNEL.receiver();
+    receiver.receive().await
 }

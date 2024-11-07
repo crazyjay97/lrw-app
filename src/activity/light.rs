@@ -1,42 +1,41 @@
-use crate::{
-    info,
-    lorawan::factory,
-    serial::{send_command, uart1_write, Command, GetDevEuiResult},
-};
-
-use embassy_time::Duration;
+use crate::{info, lorawan::into_lorawan_mode, serial::rx_listen};
+use embassy_time::{Duration, Timer};
 use embedded_graphics::{
-    mono_font::{iso_8859_1::FONT_10X20, MonoTextStyleBuilder},
+    draw_target::DrawTarget,
+    text::{Alignment, Baseline, Text},
+    Drawable,
+};
+use embedded_graphics::{
+    mono_font::{ascii::FONT_10X20, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
-    prelude::*,
-    text::{Alignment, Baseline, Text, TextStyleBuilder},
+    prelude::Dimensions,
+    text::TextStyleBuilder,
 };
 
 use super::{Activity, DISPLAY};
 
-pub struct FactoryActivity {}
+pub struct LightActivity {}
 
-impl FactoryActivity {
+impl LightActivity {
     pub fn new() -> Self {
         Self {}
     }
 }
 
-impl Activity for FactoryActivity {
+impl Activity for LightActivity {
     async fn key_handle(&self, e: crate::KeyEvent, app: &super::App) {
         match e {
-            crate::KeyEvent::Prev => {
-                let eui: Result<GetDevEuiResult, ()> =
-                    send_command(Command::GetDevEui, Duration::from_millis(300)).await;
-                if let Ok(eui) = eui {
-                    info!("eui: {:?}", eui.0);
-                } else {
-                    info!("eui: failed");
+            crate::KeyEvent::Prev => todo!(),
+            crate::KeyEvent::Next => todo!(),
+            crate::KeyEvent::Confirm => {
+                into_lorawan_mode().await;
+                loop {
+                    let (rx, len) = rx_listen().await;
+                    info!("rx: {:?}", core::str::from_utf8(&rx[0..len]).unwrap());
+                    Timer::after(Duration::from_millis(100)).await;
                 }
             }
-            crate::KeyEvent::Next => {}
-            crate::KeyEvent::Confirm => factory().await,
-            crate::KeyEvent::Back => {}
+            crate::KeyEvent::Back => todo!(),
         }
     }
 
@@ -53,7 +52,7 @@ impl Activity for FactoryActivity {
             .baseline(Baseline::Middle)
             .build();
         let _ = Text::with_text_style(
-            "Factory.....",
+            "LoRaWAN",
             display.bounding_box().center(),
             character_style,
             left_aligned,
@@ -62,3 +61,7 @@ impl Activity for FactoryActivity {
         let _ = display.flush().await;
     }
 }
+
+
+
+/// LoRaWAN
