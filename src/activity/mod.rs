@@ -9,12 +9,15 @@ use crate::{
         self,
         qrcode::{QrCodeEcc, Version},
     },
-    KeyEvent, Ssd1306DisplayType, DISPLAY_CHANNEL,
+    AppEvent, Ssd1306DisplayType, DISPLAY_CHANNEL,
 };
 use device_info::DeviceInfoActivity;
+use embassy_futures::select::select3;
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::mode::Async;
+use embassy_sync::channel::Channel;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
+use embassy_time::{Duration, Timer};
 use embedded_graphics::mono_font::iso_8859_7::FONT_10X20;
 use embedded_graphics::{
     image::Image,
@@ -29,45 +32,69 @@ use ssd1306::{prelude::*, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306A
 use tinybmp::Bmp;
 
 type DisplayType = Mutex<ThreadModeRawMutex, Option<Ssd1306DisplayType>>;
+type ViewChanType = Channel<ThreadModeRawMutex, u8, 1>;
+
 static DISPLAY: DisplayType = Mutex::new(None);
 
-struct App {
+pub struct App {
     current_activity: RefCell<AppActivity>,
     next_activity: RefCell<Option<AppActivity>>,
+    chan: ViewChanType,
 }
 
 impl App {
-    fn new() -> Self {
+    pub fn new() -> Self {
+        let chan = Channel::new();
         Self {
             current_activity: RefCell::new(AppActivity::Main(MainActivity::new())),
             next_activity: RefCell::new(None),
+            chan,
         }
     }
 
-    async fn show(&self) {
-        match &*self.current_activity.borrow() {
-            AppActivity::Main(ref main_activity) => {
-                main_activity.show().await;
-            }
-            AppActivity::EuiQrCode(ref eui_qr_code_activity) => {
-                eui_qr_code_activity.show().await;
-            }
-            AppActivity::DeviceInfo(device_info_activity) => {
-                device_info_activity.show().await;
-            }
-            AppActivity::Factory(factory_activity) => {
-                factory_activity.show().await;
-            }
-            AppActivity::Todo(todo_activity) => {
-                todo_activity.show().await;
-            }
-            AppActivity::Light(light_activity) => {
-                light_activity.show().await;
-            }
+    pub async fn show(&self) {
+        loop {
+            select3(
+                async {
+                    loop {
+                        let event: AppEvent = DISPLAY_CHANNEL.receive().await;
+                        self.key_handle(event).await;
+                    }
+                },
+                async {
+                    let _ = self.chan.receive().await;
+                },
+                async {
+                    match &*self.current_activity.borrow() {
+                        AppActivity::Main(ref main_activity) => {
+                            main_activity.show().await;
+                        }
+                        AppActivity::EuiQrCode(ref eui_qr_code_activity) => {
+                            eui_qr_code_activity.show().await;
+                        }
+                        AppActivity::DeviceInfo(device_info_activity) => {
+                            device_info_activity.show().await;
+                        }
+                        AppActivity::Factory(factory_activity) => {
+                            factory_activity.show().await;
+                        }
+                        AppActivity::Todo(todo_activity) => {
+                            todo_activity.show().await;
+                        }
+                        AppActivity::Light(light_activity) => {
+                            light_activity.show().await;
+                        }
+                    }
+                    loop {
+                        Timer::after(Duration::from_secs(1)).await;
+                    }
+                },
+            )
+            .await;
         }
     }
 
-    async fn key_handle(&self, e: KeyEvent) {
+    pub async fn key_handle(&self, e: AppEvent) {
         match &*self.current_activity.borrow() {
             AppActivity::Main(ref main_activity) => {
                 main_activity.key_handle(e, &self).await;
@@ -92,7 +119,7 @@ impl App {
             {
                 *self.current_activity.borrow_mut() = next_activity;
             }
-            self.show().await;
+            self.chan.send(0).await;
         }
     }
 
@@ -111,7 +138,7 @@ pub enum AppActivity {
 }
 
 trait Activity {
-    async fn key_handle(&self, e: KeyEvent, app: &App);
+    async fn key_handle(&self, e: AppEvent, app: &App);
     async fn show(&self);
 }
 
@@ -121,11 +148,11 @@ pub struct MainActivity {
 }
 
 impl Activity for MainActivity {
-    async fn key_handle(&self, e: KeyEvent, app: &App) {
+    async fn key_handle(&self, e: AppEvent, app: &App) {
         match e {
-            KeyEvent::Prev => self.draw_menus(1).await,
-            KeyEvent::Next => self.draw_menus(-1).await,
-            KeyEvent::Confirm => {
+            AppEvent::Prev => self.draw_menus(1).await,
+            AppEvent::Next => self.draw_menus(-1).await,
+            AppEvent::Confirm => {
                 let idx = self.menu_index.borrow();
                 let menu = &self.menus[*idx];
                 match menu.label {
@@ -151,7 +178,8 @@ impl Activity for MainActivity {
                     }
                 }
             }
-            KeyEvent::Back => {}
+            AppEvent::Back => {}
+            AppEvent::Message(_, _) => {}
         }
     }
 
@@ -337,12 +365,8 @@ pub async fn dislay_init(i2c: I2c<'static, Async>) {
     {
         *DISPLAY.lock().await = Some(display);
     }
-    let app = App::new();
-    app.show().await;
-    loop {
-        let event: KeyEvent = DISPLAY_CHANNEL.receive().await;
-        app.key_handle(event).await;
-    }
+    // let app = App::new();
+    // app.show().await;
 }
 
 fn load_bmp<'a>(slice: &'a [u8]) -> Result<Bmp<'a, BinaryColor>, ()> {
@@ -368,21 +392,22 @@ impl EuiQrCodeActivity {
 }
 
 impl Activity for EuiQrCodeActivity {
-    async fn key_handle(&self, e: KeyEvent, app: &App) {
+    async fn key_handle(&self, e: AppEvent, app: &App) {
         match e {
-            KeyEvent::Next => {
+            AppEvent::Next => {
                 //app.show().await;
             }
-            KeyEvent::Prev => {
+            AppEvent::Prev => {
                 //app.show().await;
             }
-            KeyEvent::Confirm => {
+            AppEvent::Confirm => {
                 app.navigate_to(AppActivity::Main(MainActivity::new()))
                     .await
             }
-            KeyEvent::Back => {
+            AppEvent::Back => {
                 //app.show().await;
             }
+            AppEvent::Message(_, _) => {}
         }
     }
 
@@ -438,21 +463,22 @@ impl TodoActivity {
 }
 
 impl Activity for TodoActivity {
-    async fn key_handle(&self, e: KeyEvent, app: &App) {
+    async fn key_handle(&self, e: AppEvent, app: &App) {
         match e {
-            KeyEvent::Next => {
+            AppEvent::Next => {
                 //app.show().await;
             }
-            KeyEvent::Prev => {
+            AppEvent::Prev => {
                 //app.show().await;
             }
-            KeyEvent::Confirm => {
+            AppEvent::Confirm => {
                 app.navigate_to(AppActivity::Main(MainActivity::new()))
                     .await
             }
-            KeyEvent::Back => {
+            AppEvent::Back => {
                 //app.show().await;
             }
+            AppEvent::Message(_, _) => {}
         }
     }
 

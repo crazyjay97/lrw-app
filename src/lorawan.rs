@@ -2,7 +2,7 @@ use core::str::FromStr;
 
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Timer};
-use heapless::{String, Vec};
+use heapless::String;
 
 use crate::{
     info,
@@ -10,7 +10,7 @@ use crate::{
         send_command, Command, GetAppEuiResult, GetDevAddrResult, GetDevEuiResult, GetVerResult,
         VoidResult,
     },
-    BUSY, MODE,
+    BUSY, MODE, STAT,
 };
 
 pub static LORAWAN: Mutex<ThreadModeRawMutex, Option<LoRaWAN>> = Mutex::new(None);
@@ -83,9 +83,10 @@ pub async fn init_lorawan_info() -> Result<(), ()> {
     wait_busy().await;
     let dev_eui: GetDevEuiResult =
         send_command(Command::GetDevEui, Duration::from_millis(300)).await?;
-    let dev_addr: GetDevAddrResult =
-        send_command(Command::GetDevAddr, Duration::from_millis(300)).await.unwrap_or(GetDevAddrResult{
-            0: String::<8>::from_str("00000000").unwrap() 
+    let dev_addr: GetDevAddrResult = send_command(Command::GetDevAddr, Duration::from_millis(300))
+        .await
+        .unwrap_or(GetDevAddrResult {
+            0: String::<8>::from_str("00000000").unwrap(),
         });
     info!("dev_addr: {:?}", dev_addr.0);
     let app_eui: GetAppEuiResult =
@@ -116,9 +117,32 @@ pub async fn init_lorawan_info() -> Result<(), ()> {
 /// 进入LoRaWAN 透传模式
 
 /// 9. mode set low
-pub async fn into_lorawan_mode() {
-    //MODE.lock().await.as_mut().unwrap().set_low();
+pub async fn into_lorawan_mode() -> bool {
     info!("into lorawan mode");
+    MODE.lock().await.as_mut().unwrap().set_low();
+    let mut reply = 10;
+    let is_join = {
+        let join: bool;
+        loop {
+            reply -= 1;
+            if reply <= 0 {
+                join = false;
+                break;
+            }
+            Timer::after(Duration::from_secs(3)).await;
+            let busy = BUSY.lock().await;
+            if !busy.as_ref().unwrap().is_high() {
+                continue;
+            }
+            let state = STAT.lock().await;
+            if state.as_ref().unwrap().is_high() {
+                join = true;
+                break;
+            }
+        }
+        join
+    };
+    is_join
 }
 
 ///
@@ -139,11 +163,13 @@ pub async fn factory() {
     // 1.
     let _: Result<VoidResult, ()> =
         send_command(Command::Factory, Duration::from_millis(2000)).await;
+    Timer::after(Duration::from_millis(1500)).await;
     // 2.
-    let _: Result<VoidResult, ()> = send_command(Command::Reset, Duration::from_millis(100)).await;
+    let _: Result<VoidResult, ()> = send_command(Command::Reset, Duration::from_millis(3000)).await;
+    Timer::after(Duration::from_millis(300)).await;
     // 3.
     let _: Result<VoidResult, ()> =
-        send_command(Command::SetBand(6), Duration::from_millis(100)).await;
+        send_command(Command::SetBand(6), Duration::from_millis(1000)).await;
     // 4.
     let _: Result<VoidResult, ()> = send_command(
         Command::SetChmask(String::<32>::from_str("00FF").unwrap()),
@@ -155,10 +181,8 @@ pub async fn factory() {
         let info = LORAWAN.lock().await;
         info.as_ref().unwrap().deveui.as_ref().unwrap().clone()
     };
-    info!("deveui: {}", deveui);
     let appeui = deveui.clone();
     let mut appkey = String::<32>::from_str(deveui.as_str()).unwrap();
-    info!("appkey: {}", appkey);
     let _ = appkey.push_str(deveui.as_str());
     // 6.
     let _: Result<VoidResult, ()> =
@@ -170,10 +194,10 @@ pub async fn factory() {
     // 8.
     let _: Result<VoidResult, ()> =
         send_command(Command::SetClassC, Duration::from_millis(100)).await;
-    // 8.
+    // 9.
     let _: Result<VoidResult, ()> =
         send_command(Command::SetRx2(0, 505300000), Duration::from_millis(100)).await;
-    // 8.
+    // 10.
     let _: Result<VoidResult, ()> = send_command(
         Command::SetGroupDevAddr(
             String::<8>::from_str("F8D4A3B1").unwrap(),
@@ -183,6 +207,54 @@ pub async fn factory() {
         Duration::from_millis(100),
     )
     .await;
-    let _: Result<VoidResult, ()> = send_command(Command::Save, Duration::from_millis(100)).await;
-    let _: Result<VoidResult, ()> = send_command(Command::Reset, Duration::from_millis(100)).await;
+    // 11.
+    let _: Result<VoidResult, ()> =
+        send_command(Command::SetStatus, Duration::from_millis(100)).await;
+    let _: Result<VoidResult, ()> = send_command(Command::Save, Duration::from_millis(1000)).await;
+    let _: Result<VoidResult, ()> = send_command(Command::Reset, Duration::from_millis(200)).await;
+}
+
+pub struct LoRaWANPackage<'a> {
+    pub rssi: i8,
+    pub snr: i8,
+    pub data: &'a [u8],
+}
+
+impl<'a> LoRaWANPackage<'a> {
+    pub fn decode(data: &'a [u8]) -> LoRaWANPackage {
+        let len = data.len();
+        if len >= 5 {
+            let snr = data[len - 3] as i8;
+            let rssi = data[len - 2] as i8;
+            LoRaWANPackage {
+                rssi,
+                snr,
+                data: &data[0..len - 4],
+            }
+        } else {
+            LoRaWANPackage {
+                rssi: 0,
+                snr: 0,
+                data,
+            }
+        }
+    }
+}
+
+pub enum LoRaWANState {
+    Ready,
+    Joining,
+    Online,
+    Offline,
+}
+
+impl LoRaWANState {
+    pub fn to_str(&self) -> &str {
+        match self {
+            LoRaWANState::Ready => "ready",
+            LoRaWANState::Joining => "joining",
+            LoRaWANState::Online => "online",
+            LoRaWANState::Offline => "offline",
+        }
+    }
 }

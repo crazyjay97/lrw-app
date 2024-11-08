@@ -6,16 +6,18 @@ mod fmt;
 mod lorawan;
 mod serial;
 mod utils;
-use activity::dislay_init;
+use core::cell::OnceCell;
+
+use activity::{dislay_init, App};
 use embassy_executor::Spawner;
 use embassy_futures::select;
 use embassy_stm32::{
     bind_interrupts,
     exti::ExtiInput,
-    gpio::{Input, Level, Output, OutputOpenDrain, Pull, Speed},
+    gpio::{Input, Level, Output, Pull, Speed},
     i2c,
     mode::Async,
-    peripherals::{self, PA0, PA5, PA6, PA7, PD11, PD12},
+    peripherals::{self, PA0, PA5, PD11, PD12},
     rcc::{self, Pll},
     time::Hertz,
     usart::{self, Uart},
@@ -50,8 +52,8 @@ type Ssd1306DisplayType = Ssd1306Async<
     ssd1306::mode::BufferedGraphicsModeAsync<DisplaySize128x64>,
 >;
 
-type KeyEventChannelType = Channel<ThreadModeRawMutex, KeyEvent, 1>;
-type KeyEventSender = Sender<'static, ThreadModeRawMutex, KeyEvent, 1>;
+type KeyEventChannelType = Channel<ThreadModeRawMutex, AppEvent, 1>;
+type KeyEventSender = Sender<'static, ThreadModeRawMutex, AppEvent, 1>;
 static DISPLAY_CHANNEL: KeyEventChannelType = Channel::new();
 static KEY1: KeyType = Mutex::new(None);
 static KEY2: KeyType = Mutex::new(None);
@@ -60,12 +62,12 @@ static MODE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(Non
 static WAKE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
 static BUSY: InputType = Mutex::new(None);
 static STAT: InputType = Mutex::new(None);
-
-enum KeyEvent {
+pub enum AppEvent {
     Prev,
     Next,
     Confirm,
     Back,
+    Message([u8; 1024], usize),
 }
 
 #[embassy_executor::main]
@@ -94,7 +96,7 @@ async fn main(spawner: Spawner) {
         info!("busy {:?}", busy.is_low());
         *BUSY.lock().await = Some(busy);
         let state = Input::new(p.PA7, Pull::Up);
-        info!("mode {:?}", state.is_low());
+        info!("state {:?}", state.is_low());
         *STAT.lock().await = Some(state);
         let button = ExtiInput::new(p.PD8, p.EXTI8, Pull::Up);
         *KEY1.lock().await = Some(button);
@@ -115,13 +117,15 @@ async fn main(spawner: Spawner) {
     }
     let i2c = init_display_i2c!(p);
     unwrap!(spawner.spawn(serial::serial_listen()));
-    unwrap!(spawner.spawn(key_handle(DISPLAY_CHANNEL.sender())));
+    unwrap!(spawner.spawn(key_handle()));
     let _ = init_lorawan_info().await;
     dislay_init(i2c).await;
+    let app = App::new();
+    app.show().await;
 }
 
 #[embassy_executor::task]
-async fn key_handle(sender: KeyEventSender) {
+async fn key_handle() {
     let mut key1 = KEY1.lock().await;
     let key1 = key1.as_mut().unwrap();
 
@@ -135,19 +139,19 @@ async fn key_handle(sender: KeyEventSender) {
             async {
                 key1.wait_for_any_edge().await;
                 if !key1.is_high() {
-                    sender.send(KeyEvent::Next).await;
+                    DISPLAY_CHANNEL.send(AppEvent::Next).await;
                 }
             },
             async {
                 key2.wait_for_any_edge().await;
                 if !key2.is_high() {
-                    sender.send(KeyEvent::Prev).await;
+                    DISPLAY_CHANNEL.send(AppEvent::Prev).await;
                 }
             },
             async {
                 key3.wait_for_any_edge().await;
                 if !key3.is_high() {
-                    sender.send(KeyEvent::Confirm).await;
+                    DISPLAY_CHANNEL.send(AppEvent::Confirm).await;
                 }
             },
         )

@@ -1,7 +1,7 @@
 use core::fmt::Write;
 use core::str::FromStr;
 
-use crate::fmt::*;
+use crate::{fmt::*, lorawan::LoRaWANPackage, AppEvent, DISPLAY_CHANNEL};
 use embassy_futures::select::{select, Either};
 use embassy_stm32::{
     mode::Async,
@@ -36,6 +36,7 @@ pub enum Command {
     SetAppSKey,
     SetNwkSKey,
     Factory,
+    SetStatus,
     Save,
     Reset,
     Debug,
@@ -130,6 +131,7 @@ impl Command {
                 );
                 Vec::<u8, 128>::from_slice(cmd.as_bytes()).unwrap()
             }
+            Command::SetStatus => Vec::<u8, 128>::from_slice(b"at+status=2,2\r\n").unwrap(),
         }
     }
 }
@@ -141,10 +143,8 @@ pub async fn init(uart: Uart<'static, Async>) {
 }
 
 pub async fn uart1_write(data: &[u8]) -> Result<(), ()> {
-    info!("uart write1");
     let mut lock = UART1_WRITE.lock().await;
     if lock.as_mut().unwrap().write(data).await.is_ok() {
-        info!("uart write ok");
     } else {
         return Err(());
     }
@@ -157,12 +157,18 @@ pub async fn serial_listen() {
         let mut buf = [0u8; 1024];
         let mut lock = UART1_READ.lock().await;
         if let Some(uart) = lock.as_mut() {
-            info!("uart listen");
             match uart.read_until_idle(&mut buf).await {
                 Ok(len) => {
+                    info!(">>> receiver len: {}", len);
                     let mut sender = SERIAL_SENDER_CHANNEL.lock().await;
                     if let Some(sender) = sender.as_mut() {
+                        info!(">>> sender not none");
                         sender.send((buf, len)).await;
+                    } else {
+                        info!(">>> sender is none");
+                        DISPLAY_CHANNEL
+                            .send(AppEvent::Message(buf, len))
+                            .await;
                     }
                 }
                 Err(e) => {
@@ -264,7 +270,7 @@ where
     T: CommandResultTrait,
 {
     info!(
-        "send command {:?}",
+        "[send command]: {:?}",
         core::str::from_utf8(&command.as_bytes()).unwrap()
     );
     CHANNEL.clear();
@@ -282,10 +288,6 @@ where
             let receiver = CHANNEL.receiver();
             loop {
                 let (buf, len) = receiver.receive().await;
-                info!(
-                    ">>> receiver {}",
-                    core::str::from_utf8(&buf[..len]).unwrap()
-                );
                 let data = T::parse(&buf[..len]);
                 if data.is_ok() {
                     return Ok::<T, ()>(data.unwrap());

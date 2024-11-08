@@ -20,16 +20,17 @@ pub struct DeviceInfoActivity {
 }
 
 impl Activity for DeviceInfoActivity {
-    async fn key_handle(&self, e: crate::KeyEvent, app: &super::App) {
+    async fn key_handle(&self, e: crate::AppEvent, app: &super::App) {
         match e {
-            crate::KeyEvent::Prev => {
+            crate::AppEvent::Prev => {
                 self.draw_list(1).await;
             }
-            crate::KeyEvent::Next => {
+            crate::AppEvent::Next => {
                 self.draw_list(-1).await;
             }
-            crate::KeyEvent::Confirm => {}
-            crate::KeyEvent::Back => {}
+            crate::AppEvent::Confirm => {}
+            crate::AppEvent::Back => {}
+            crate::AppEvent::Message(_, _) => {}
         }
     }
 
@@ -228,7 +229,6 @@ fn wrap_text_by_char<const N: usize>(text: &str) -> String<N> {
     let max_chars_per_line = (DeviceInfoActivity::WIDTH / DeviceInfoActivity::FONT_WIDTH) as usize;
     let mut lines: String<N> = String::new();
     let mut current_line: String<32> = String::new();
-
     for (i, c) in text.chars().enumerate() {
         current_line.push(c).unwrap();
         if (i + 1) % max_chars_per_line == 0 {
