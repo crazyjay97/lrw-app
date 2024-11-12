@@ -5,7 +5,7 @@ use embassy_time::{Duration, Timer};
 use heapless::String;
 
 use crate::{
-    info,
+    info, into_cmd_mode,
     serial::{
         send_command, Command, GetAppEuiResult, GetDevAddrResult, GetDevEuiResult, GetVerResult,
         VoidResult,
@@ -74,15 +74,19 @@ impl State {
 
 pub async fn wait_busy() {
     let busy = BUSY.lock().await;
+    let state = busy.as_ref().unwrap().is_low();
+    info!("busy: {:?}", state);
     if busy.as_ref().unwrap().is_low() {
-        Timer::after(Duration::from_millis(500)).await;
+        Timer::after(Duration::from_millis(1500)).await;
+        info!("is busy~~~~~~~~~~~~~~~~~~");
     }
 }
 
 pub async fn init_lorawan_info() -> Result<(), ()> {
+    into_cmd_mode().await;
     wait_busy().await;
     let dev_eui: GetDevEuiResult =
-        send_command(Command::GetDevEui, Duration::from_millis(300)).await?;
+        send_command(Command::GetDevEui, Duration::from_millis(1000)).await?;
     let dev_addr: GetDevAddrResult = send_command(Command::GetDevAddr, Duration::from_millis(300))
         .await
         .unwrap_or(GetDevAddrResult {
@@ -90,9 +94,9 @@ pub async fn init_lorawan_info() -> Result<(), ()> {
         });
     info!("dev_addr: {:?}", dev_addr.0);
     let app_eui: GetAppEuiResult =
-        send_command(Command::GetAppEui, Duration::from_millis(300)).await?;
+        send_command(Command::GetAppEui, Duration::from_millis(1000)).await?;
     info!("app_eui: {:?}", app_eui.0);
-    let ver: GetVerResult = send_command(Command::GetVer, Duration::from_millis(300)).await?;
+    let ver: GetVerResult = send_command(Command::GetVer, Duration::from_millis(1000)).await?;
     info!("ver: {:?}", ver.0);
     let mut appkey: String<32> = String::new();
     appkey.push_str(dev_eui.0.as_str())?;
@@ -104,7 +108,7 @@ pub async fn init_lorawan_info() -> Result<(), ()> {
         devaddr: Some(dev_addr.0),
         nwkskey: None,
         appskey: None,
-        class: Class::A,
+        class: Class::C,
         join_type: JoinType::Otaa,
         state: State::Join,
         version: Some(ver.0),

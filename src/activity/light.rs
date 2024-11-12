@@ -35,7 +35,7 @@ impl LightActivity {
         Self {
             rssi: RefCell::new(None),
             snr: RefCell::new(None),
-            state: RefCell::new(LoRaWANState::Ready),
+            state: RefCell::new(LoRaWANState::Online),
             chan: Channel::new(),
             light: RefCell::new(false),
         }
@@ -48,13 +48,9 @@ impl Activity for LightActivity {
             AppEvent::Prev => todo!(),
             AppEvent::Next => todo!(),
             AppEvent::Confirm => {
-                self.state.replace(LoRaWANState::Joining);
-                self.refresh().await;
-                if into_lorawan_mode().await {
-                    info!("join success");
-                } else {
-                    info!("join failed");
-                }
+                //self.state.replace(LoRaWANState::Joining);
+                //self.refresh().await;
+
                 {
                     self.state.replace(LoRaWANState::Online);
                 }
@@ -78,6 +74,7 @@ impl Activity for LightActivity {
                 }
                 self.refresh().await;
             }
+            _ => {}
         }
     }
 

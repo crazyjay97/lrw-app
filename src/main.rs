@@ -2,13 +2,13 @@
 #![no_main]
 
 mod activity;
+mod config;
 mod fmt;
 mod lorawan;
 mod serial;
 mod utils;
-use core::cell::OnceCell;
 
-use activity::{dislay_init, App};
+use activity::{dislay_init, light::LightActivity, App, AppActivity};
 use embassy_executor::Spawner;
 use embassy_futures::select;
 use embassy_stm32::{
@@ -17,14 +17,15 @@ use embassy_stm32::{
     gpio::{Input, Level, Output, Pull, Speed},
     i2c,
     mode::Async,
-    peripherals::{self, PA0, PA5, PD11, PD12},
+    peripherals::{self, FLASH, PA0, PA5, PD11, PD12},
     rcc::{self, Pll},
     time::Hertz,
     usart::{self, Uart},
     Config,
 };
+use embassy_time::{Duration, Timer};
 use fmt::*;
-use lorawan::init_lorawan_info;
+use lorawan::{init_lorawan_info, into_lorawan_mode};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 #[cfg(feature = "defmt")]
@@ -53,7 +54,6 @@ type Ssd1306DisplayType = Ssd1306Async<
 >;
 
 type KeyEventChannelType = Channel<ThreadModeRawMutex, AppEvent, 1>;
-type KeyEventSender = Sender<'static, ThreadModeRawMutex, AppEvent, 1>;
 static DISPLAY_CHANNEL: KeyEventChannelType = Channel::new();
 static KEY1: KeyType = Mutex::new(None);
 static KEY2: KeyType = Mutex::new(None);
@@ -62,11 +62,13 @@ static MODE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(Non
 static WAKE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
 static BUSY: InputType = Mutex::new(None);
 static STAT: InputType = Mutex::new(None);
+static FLASH: Mutex<ThreadModeRawMutex, Option<FLASH>> = Mutex::new(None);
 pub enum AppEvent {
     Prev,
     Next,
     Confirm,
     Back,
+    NavigateTo(AppActivity),
     Message([u8; 1024], usize),
 }
 
@@ -89,6 +91,10 @@ async fn main(spawner: Spawner) {
     config.rcc.mux.lptim1sel = rcc::mux::Lptim1sel::PCLK1;
     config.rcc.mux.i2c1sel = rcc::mux::I2c1sel::SYS;
     let mut p = embassy_stm32::init(config);
+    {
+        let flash = p.FLASH;
+        *FLASH.lock().await = Some(flash);
+    }
     let (_oled_dc, _oled_rst) = display_pre_init(&mut p.PD11, &mut p.PD12);
     init_mode_wake(p.PA0, p.PA5).await;
     {
@@ -119,7 +125,9 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(serial::serial_listen()));
     unwrap!(spawner.spawn(key_handle()));
     let _ = init_lorawan_info().await;
+    unwrap!(spawner.spawn(join_network()));
     dislay_init(i2c).await;
+    let _ = config::init().await;
     let app = App::new();
     app.show().await;
 }
@@ -159,6 +167,27 @@ async fn key_handle() {
     }
 }
 
+#[embassy_executor::task]
+async fn join_network() {
+    loop {
+        if into_lorawan_mode().await {
+            DISPLAY_CHANNEL
+                .send(AppEvent::NavigateTo(AppActivity::Light(
+                    LightActivity::new(),
+                )))
+                .await;
+            
+            break;
+        } else {
+            info!("join failed");
+            Timer::after(Duration::from_secs(5)).await;
+        }
+    }
+}
+
+//async fn register()=>{}
+
+
 fn display_pre_init<'a>(pd11: &'a mut PD11, pd12: &'a mut PD12) -> (Output<'a>, Output<'a>) {
     let mut oled_dc = Output::new(pd11, Level::Low, Speed::Low);
     let mut oled_rst = Output::new(pd12, Level::Low, Speed::Low);
@@ -176,6 +205,13 @@ async fn init_mode_wake(pa0: PA0, pa5: PA5) {
     wake.set_high();
     *MODE.lock().await = Some(mode);
     *WAKE.lock().await = Some(wake);
+}
+
+pub async fn into_cmd_mode() {
+    let mut mode = MODE.lock().await;
+    let mode = mode.as_mut().unwrap();
+    mode.set_high();
+    Timer::after(Duration::from_millis(300)).await;
 }
 
 #[macro_export]

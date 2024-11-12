@@ -2,7 +2,7 @@ use core::cell::RefCell;
 
 mod device_info;
 mod factory;
-mod light;
+pub mod light;
 use crate::{fmt::*, lorawan};
 use crate::{
     utils::{
@@ -46,7 +46,7 @@ impl App {
     pub fn new() -> Self {
         let chan = Channel::new();
         Self {
-            current_activity: RefCell::new(AppActivity::Main(MainActivity::new())),
+            current_activity: RefCell::new(AppActivity::EuiQrCode(EuiQrCodeActivity::new())),
             next_activity: RefCell::new(None),
             chan,
         }
@@ -180,6 +180,7 @@ impl Activity for MainActivity {
             }
             AppEvent::Back => {}
             AppEvent::Message(_, _) => {}
+            _ => {}
         }
     }
 
@@ -365,8 +366,6 @@ pub async fn dislay_init(i2c: I2c<'static, Async>) {
     {
         *DISPLAY.lock().await = Some(display);
     }
-    // let app = App::new();
-    // app.show().await;
 }
 
 fn load_bmp<'a>(slice: &'a [u8]) -> Result<Bmp<'a, BinaryColor>, ()> {
@@ -408,6 +407,9 @@ impl Activity for EuiQrCodeActivity {
                 //app.show().await;
             }
             AppEvent::Message(_, _) => {}
+            AppEvent::NavigateTo(activity) => {
+                app.navigate_to(activity).await;
+            }
         }
     }
 
@@ -465,6 +467,7 @@ impl TodoActivity {
 impl Activity for TodoActivity {
     async fn key_handle(&self, e: AppEvent, app: &App) {
         match e {
+            crate::AppEvent::NavigateTo(_) => {}
             AppEvent::Next => {
                 //app.show().await;
             }

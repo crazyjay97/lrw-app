@@ -31,6 +31,7 @@ impl Activity for DeviceInfoActivity {
             crate::AppEvent::Confirm => {}
             crate::AppEvent::Back => {}
             crate::AppEvent::Message(_, _) => {}
+            _ => {}
         }
     }
 

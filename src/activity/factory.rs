@@ -1,4 +1,4 @@
-use core::{borrow::Borrow, str::FromStr};
+use core::str::FromStr;
 
 use crate::{
     info,
@@ -63,6 +63,7 @@ impl Activity for FactoryActivity {
             }
             crate::AppEvent::Back => {}
             crate::AppEvent::Message(_, _) => {}
+            crate::AppEvent::NavigateTo(_) => {}
         }
     }
 
