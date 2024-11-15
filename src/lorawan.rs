@@ -5,7 +5,7 @@ use embassy_time::{Duration, Timer};
 use heapless::String;
 
 use crate::{
-    info, into_cmd_mode,
+    info, into_cmd_mode, lorawan,
     serial::{
         send_command, Command, GetAppEuiResult, GetDevAddrResult, GetDevEuiResult, GetVerResult,
         VoidResult,
@@ -122,6 +122,8 @@ pub async fn init_lorawan_info() -> Result<(), ()> {
 
 /// 9. mode set low
 pub async fn into_lorawan_mode() -> bool {
+    MODE.lock().await.as_mut().unwrap().set_high();
+    Timer::after(Duration::from_millis(100)).await;
     info!("into lorawan mode");
     MODE.lock().await.as_mut().unwrap().set_low();
     let mut reply = 10;
@@ -133,12 +135,14 @@ pub async fn into_lorawan_mode() -> bool {
                 join = false;
                 break;
             }
-            Timer::after(Duration::from_secs(3)).await;
+            Timer::after(Duration::from_millis(100)).await;
             let busy = BUSY.lock().await;
+            info!("busy: {:?}", busy.as_ref().unwrap().is_high());
             if !busy.as_ref().unwrap().is_high() {
                 continue;
             }
             let state = STAT.lock().await;
+            info!("state: {:?}", state.as_ref().unwrap().is_high());
             if state.as_ref().unwrap().is_high() {
                 join = true;
                 break;
@@ -200,7 +204,7 @@ pub async fn factory() {
         send_command(Command::SetClassC, Duration::from_millis(100)).await;
     // 9.
     let _: Result<VoidResult, ()> =
-        send_command(Command::SetRx2(0, 505300000), Duration::from_millis(100)).await;
+        send_command(Command::SetRx2(5, 505300000), Duration::from_millis(100)).await;
     // 10.
     let _: Result<VoidResult, ()> = send_command(
         Command::SetGroupDevAddr(
@@ -212,6 +216,9 @@ pub async fn factory() {
     )
     .await;
     // 11.
+    let _: Result<VoidResult, ()> =
+        send_command(Command::SetDataRate, Duration::from_millis(100)).await;
+    // 12.
     let _: Result<VoidResult, ()> =
         send_command(Command::SetStatus, Duration::from_millis(100)).await;
     let _: Result<VoidResult, ()> = send_command(Command::Save, Duration::from_millis(1000)).await;

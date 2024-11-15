@@ -65,24 +65,26 @@ impl App {
                     let _ = self.chan.receive().await;
                 },
                 async {
-                    match &*self.current_activity.borrow() {
-                        AppActivity::Main(ref main_activity) => {
-                            main_activity.show().await;
-                        }
-                        AppActivity::EuiQrCode(ref eui_qr_code_activity) => {
-                            eui_qr_code_activity.show().await;
-                        }
-                        AppActivity::DeviceInfo(device_info_activity) => {
-                            device_info_activity.show().await;
-                        }
-                        AppActivity::Factory(factory_activity) => {
-                            factory_activity.show().await;
-                        }
-                        AppActivity::Todo(todo_activity) => {
-                            todo_activity.show().await;
-                        }
-                        AppActivity::Light(light_activity) => {
-                            light_activity.show().await;
+                    {
+                        match &*self.current_activity.borrow() {
+                            AppActivity::Main(ref main_activity) => {
+                                main_activity.show().await;
+                            }
+                            AppActivity::EuiQrCode(ref eui_qr_code_activity) => {
+                                eui_qr_code_activity.show().await;
+                            }
+                            AppActivity::DeviceInfo(device_info_activity) => {
+                                device_info_activity.show().await;
+                            }
+                            AppActivity::Factory(factory_activity) => {
+                                factory_activity.show().await;
+                            }
+                            AppActivity::Todo(todo_activity) => {
+                                todo_activity.show().await;
+                            }
+                            AppActivity::Light(light_activity) => {
+                                light_activity.show().await;
+                            }
                         }
                     }
                     loop {
@@ -95,29 +97,36 @@ impl App {
     }
 
     pub async fn key_handle(&self, e: AppEvent) {
-        match &*self.current_activity.borrow() {
-            AppActivity::Main(ref main_activity) => {
-                main_activity.key_handle(e, &self).await;
-            }
-            AppActivity::EuiQrCode(ref eui_qr_code_activity) => {
-                eui_qr_code_activity.key_handle(e, &self).await;
-            }
-            AppActivity::DeviceInfo(device_info_activity) => {
-                device_info_activity.key_handle(e, &self).await;
-            }
-            AppActivity::Factory(factory_activity) => {
-                factory_activity.key_handle(e, &self).await;
-            }
-            AppActivity::Todo(todo_activity) => {
-                todo_activity.key_handle(e, &self).await;
-            }
-            AppActivity::Light(light_activity) => {
-                light_activity.key_handle(e, &self).await;
+        {
+            match &*self.current_activity.borrow() {
+                AppActivity::Main(ref main_activity) => {
+                    main_activity.key_handle(e, &self).await;
+                }
+                AppActivity::EuiQrCode(ref eui_qr_code_activity) => {
+                    eui_qr_code_activity.key_handle(e, &self).await;
+                }
+                AppActivity::DeviceInfo(device_info_activity) => {
+                    device_info_activity.key_handle(e, &self).await;
+                }
+                AppActivity::Factory(factory_activity) => {
+                    factory_activity.key_handle(e, &self).await;
+                }
+                AppActivity::Todo(todo_activity) => {
+                    todo_activity.key_handle(e, &self).await;
+                }
+                AppActivity::Light(light_activity) => {
+                    light_activity.key_handle(e, &self).await;
+                }
             }
         }
         if let Some(next_activity) = self.next_activity.take() {
             {
-                *self.current_activity.borrow_mut() = next_activity;
+                let c = self.current_activity.try_borrow_mut();
+                if let Ok(mut c) = c {
+                    *c = next_activity;
+                } else {
+                    info!("err {:?}", c.err());
+                }
             }
             self.chan.send(0).await;
         }
@@ -416,6 +425,7 @@ impl Activity for EuiQrCodeActivity {
     async fn show(&self) {
         let mut display = DISPLAY.lock().await;
         let display = display.as_mut().unwrap();
+        let _ = display.clear(BinaryColor::Off);
         let mut outbuffer = [0u8; Version::MAX.buffer_len()];
         let mut tempbuffer = [0u8; Version::MAX.buffer_len()];
         let lorawan_info = lorawan::LORAWAN.lock().await;

@@ -37,6 +37,7 @@ heapless = "0.8.0"
 embedded-graphics = { version = "0.8.1" }
 tinybmp = { version = "0.6.0" }
 panic-halt = "0.2.0"
+hex = { version = "0.4", default-features = false }
 
 [[bin]]
 name = "lrw-app"

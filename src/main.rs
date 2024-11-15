@@ -5,6 +5,7 @@ mod activity;
 mod config;
 mod fmt;
 mod lorawan;
+mod proto;
 mod serial;
 mod utils;
 
@@ -28,14 +29,12 @@ use fmt::*;
 use lorawan::{init_lorawan_info, into_lorawan_mode};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
+use proto::get_apply_code_cmd;
+use utils::rand;
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
-use embassy_sync::{
-    blocking_mutex::raw::ThreadModeRawMutex,
-    channel::{Channel, Sender},
-    mutex::Mutex,
-};
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel, mutex::Mutex};
 
 use ssd1306::{prelude::I2CInterface, size::DisplaySize128x64, Ssd1306Async};
 
@@ -55,9 +54,11 @@ type Ssd1306DisplayType = Ssd1306Async<
 
 type KeyEventChannelType = Channel<ThreadModeRawMutex, AppEvent, 1>;
 static DISPLAY_CHANNEL: KeyEventChannelType = Channel::new();
+static RE_JOIN_CHANNEL: Channel<ThreadModeRawMutex, u8, 1> = Channel::new();
 static KEY1: KeyType = Mutex::new(None);
 static KEY2: KeyType = Mutex::new(None);
 static KEY3: KeyType = Mutex::new(None);
+static RESET: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
 static MODE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
 static WAKE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
 static BUSY: InputType = Mutex::new(None);
@@ -99,11 +100,12 @@ async fn main(spawner: Spawner) {
     init_mode_wake(p.PA0, p.PA5).await;
     {
         let busy = Input::new(p.PA6, Pull::Up);
-        info!("busy {:?}", busy.is_low());
+
         *BUSY.lock().await = Some(busy);
-        let state = Input::new(p.PA7, Pull::Up);
-        info!("state {:?}", state.is_low());
+        let state = Input::new(p.PA7, Pull::None);
         *STAT.lock().await = Some(state);
+        let reset = Output::new(p.PA1, Level::High, Speed::Low);
+        *RESET.lock().await = Some(reset);
         let button = ExtiInput::new(p.PD8, p.EXTI8, Pull::Up);
         *KEY1.lock().await = Some(button);
         let button = ExtiInput::new(p.PD10, p.EXTI10, Pull::Up);
@@ -169,15 +171,34 @@ async fn key_handle() {
 
 #[embassy_executor::task]
 async fn join_network() {
+    let delay = {
+        let lrw = lorawan::LORAWAN.lock().await;
+        let lrw = lrw.as_ref().unwrap();
+        let deveui = lrw.deveui.as_ref().unwrap();
+        let mut eui: [u8; 8] = [0; 8];
+        let _ = hex::decode_to_slice(&deveui, &mut eui);
+        rand(&eui, 30000)
+    };
+    {
+        info!("delay: {}", delay);
+        //Timer::after(Duration::from_millis(delay.into())).await;
+    }
     loop {
-        if into_lorawan_mode().await {
+        let into = { into_lorawan_mode().await };
+        if into {
             DISPLAY_CHANNEL
                 .send(AppEvent::NavigateTo(AppActivity::Light(
                     LightActivity::new(),
                 )))
                 .await;
-            
-            break;
+            register().await;
+            let _ = RE_JOIN_CHANNEL.receive().await;
+            info!("re join......");
+            let mut reset = RESET.lock().await;
+            reset.as_mut().unwrap().set_low();
+            Timer::after(Duration::from_millis(100)).await;
+            reset.as_mut().unwrap().set_high();
+            Timer::after(Duration::from_millis(100)).await;
         } else {
             info!("join failed");
             Timer::after(Duration::from_secs(5)).await;
@@ -185,8 +206,29 @@ async fn join_network() {
     }
 }
 
-//async fn register()=>{}
+async fn register() {
+    loop {
+        let need_apply_code = {
+            let config = config::CONFIG.lock().await;
+            let config = config.as_ref().unwrap();
+            config.code == [0xFF; 16]
+        };
+        if need_apply_code {
+            apply_code().await;
+        } else {
+            info!("device already registered >>>>>>>>>>");
+            break;
+        }
+    }
+}
 
+async fn apply_code() {
+    let buf = &get_apply_code_cmd().to_bytes();
+    info!("apply code {:02X}", buf);
+    let _ = serial::uart1_write(&buf).await;
+    Timer::after(Duration::from_secs(3)).await;
+    info!("apply code");
+}
 
 fn display_pre_init<'a>(pd11: &'a mut PD11, pd12: &'a mut PD12) -> (Output<'a>, Output<'a>) {
     let mut oled_dc = Output::new(pd11, Level::Low, Speed::Low);

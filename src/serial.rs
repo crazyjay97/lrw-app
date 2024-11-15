@@ -44,6 +44,7 @@ pub enum Command {
     SetBand(u8),
     SetChmask(String<32>),
     SetRx2(u8, u32),
+    SetDataRate,
     SetGroupDevAddr(String<8>, String<32>, String<32>),
 }
 
@@ -132,6 +133,9 @@ impl Command {
                 Vec::<u8, 128>::from_slice(cmd.as_bytes()).unwrap()
             }
             Command::SetStatus => Vec::<u8, 128>::from_slice(b"at+status=2,2\r\n").unwrap(),
+            Command::SetDataRate => {
+                Vec::<u8, 128>::from_slice(b"AT+DATARATE=5,3,50,1,23\r\n").unwrap()
+            }
         }
     }
 }
@@ -145,7 +149,9 @@ pub async fn init(uart: Uart<'static, Async>) {
 pub async fn uart1_write(data: &[u8]) -> Result<(), ()> {
     let mut lock = UART1_WRITE.lock().await;
     if lock.as_mut().unwrap().write(data).await.is_ok() {
+        info!("<<< write success");
     } else {
+        info!("<<< write failed");
         return Err(());
     }
     Ok(())
@@ -166,9 +172,7 @@ pub async fn serial_listen() {
                         sender.send((buf, len)).await;
                     } else {
                         info!(">>> sender is none");
-                        DISPLAY_CHANNEL
-                            .send(AppEvent::Message(buf, len))
-                            .await;
+                        DISPLAY_CHANNEL.send(AppEvent::Message(buf, len)).await;
                     }
                 }
                 Err(e) => {
