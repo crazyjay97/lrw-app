@@ -11,8 +11,9 @@ use crate::{
     },
     AppEvent, Ssd1306DisplayType, DISPLAY_CHANNEL,
 };
+use core::fmt::Write;
 use device_info::DeviceInfoActivity;
-use embassy_futures::select::select3;
+use embassy_futures::select::{select, select3};
 use embassy_stm32::i2c::I2c;
 use embassy_stm32::mode::Async;
 use embassy_sync::channel::Channel;
@@ -27,6 +28,7 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use factory::FactoryActivity;
+use heapless::String;
 use light::LightActivity;
 use ssd1306::{prelude::*, size::DisplaySize128x64, I2CDisplayInterface, Ssd1306Async};
 use tinybmp::Bmp;
@@ -391,11 +393,15 @@ fn load_bmp<'a>(slice: &'a [u8]) -> Result<Bmp<'a, BinaryColor>, ()> {
     Err(())
 }
 
-pub struct EuiQrCodeActivity {}
+pub struct EuiQrCodeActivity {
+    chan: Channel<ThreadModeRawMutex, u8, 1>,
+}
 
 impl EuiQrCodeActivity {
     fn new() -> Self {
-        Self {}
+        Self {
+            chan: Channel::new(),
+        }
     }
 }
 
@@ -409,14 +415,18 @@ impl Activity for EuiQrCodeActivity {
                 //app.show().await;
             }
             AppEvent::Confirm => {
+                self.done().await;
                 app.navigate_to(AppActivity::Main(MainActivity::new()))
                     .await
             }
             AppEvent::Back => {
                 //app.show().await;
             }
-            AppEvent::Message(_, _) => {}
+            AppEvent::Message(buf, size) => {
+                info!("{:02X}", buf[0..size]);
+            }
             AppEvent::NavigateTo(activity) => {
+                self.done().await;
                 app.navigate_to(activity).await;
             }
         }
@@ -424,7 +434,7 @@ impl Activity for EuiQrCodeActivity {
 
     async fn show(&self) {
         let mut display = DISPLAY.lock().await;
-        let display = display.as_mut().unwrap();
+        let mut display = display.as_mut().unwrap();
         let _ = display.clear(BinaryColor::Off);
         let mut outbuffer = [0u8; Version::MAX.buffer_len()];
         let mut tempbuffer = [0u8; Version::MAX.buffer_len()];
@@ -444,10 +454,9 @@ impl Activity for EuiQrCodeActivity {
         .unwrap();
         // 放大倍数
         let scale: u32 = 3;
-        let screen_width = 128;
         let screen_height = 64;
         let qr_size = qr.size() as u32 * scale;
-        let offset_x = (screen_width - qr_size as u32) / 2;
+        let offset_x = 0;
         let offset_y = (screen_height - qr_size as u32) / 2;
         for y in 0..qr.size() {
             for x in 0..qr.size() {
@@ -463,6 +472,56 @@ impl Activity for EuiQrCodeActivity {
             }
         }
         let _ = display.flush().await;
+
+        let _ = select(
+            async {
+                let c = self.chan.receive().await;
+                if c == 0xFF {
+                    return;
+                }
+            },
+            async {
+                loop {
+                    let state = { *lorawan::LORAWAN_STATE.lock().await };
+                    self.draw_state(&mut display, "Busy", &state.0, 128, 20)
+                        .await;
+                    self.draw_state(&mut display, "State", &state.1, 128, 40)
+                        .await;
+                    let _ = display.flush().await;
+                    Timer::after(Duration::from_millis(300)).await;
+                }
+            },
+        )
+        .await;
+    }
+}
+
+impl EuiQrCodeActivity {
+    pub async fn done(&self) {
+        self.chan.send(0xFF).await;
+        Timer::after(Duration::from_millis(50)).await;
+    }
+
+    async fn draw_state(
+        &self,
+        display: &mut Ssd1306DisplayType,
+        label: &str,
+        state: &lorawan::PinState,
+        x: i32,
+        y: i32,
+    ) {
+        let style = MonoTextStyleBuilder::new()
+            .font(&FONT_6X10)
+            .text_color(BinaryColor::On)
+            .background_color(BinaryColor::Off)
+            .build();
+        let aligned = TextStyleBuilder::new()
+            .alignment(Alignment::Right)
+            .baseline(Baseline::Middle)
+            .build();
+        let mut s = String::<16>::new();
+        let _ = write!(s, "{}: {}", label, state.as_str());
+        let _ = Text::with_text_style(s.as_str(), Point::new(x, y), style, aligned).draw(display);
     }
 }
 

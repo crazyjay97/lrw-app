@@ -80,10 +80,10 @@ impl Activity for LightActivity {
                         let cmd = data.data[1];
                         let addr: &[u8] = &data.data[2..18];
                         if cmd == 0x81 {
-                            let rs = config::write_config(config::Config {
-                                code: Vec::<u8, 16>::from_slice(&addr).unwrap(),
-                            })
-                            .await;
+                            let mut config =
+                                { config::CONFIG.lock().await.as_ref().unwrap().clone() };
+                            config.code = Vec::<u8, 16>::from_slice(&addr).unwrap();
+                            let rs = config::write_config(config).await;
                             info!("set code: {:?}", rs.is_ok());
                         } else {
                             let next = {
@@ -134,6 +134,14 @@ impl Activity for LightActivity {
                                     if control == 0x02 {
                                         self.send_heartbeat.replace(false);
                                     }
+                                    return;
+                                } else if cmd == 0x87 {
+                                    let join_delay_max = data.data[18];
+                                    let mut config =
+                                        { config::CONFIG.lock().await.as_ref().unwrap().clone() };
+                                    config.join_delay_max = join_delay_max;
+                                    let rs = config::write_config(config).await;
+                                    info!("set join delay max: {:?}", rs.is_ok());
                                     return;
                                 }
                             }

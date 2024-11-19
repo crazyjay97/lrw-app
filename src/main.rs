@@ -27,7 +27,7 @@ use embassy_stm32::{
 };
 use embassy_time::{Duration, Timer};
 use fmt::*;
-use lorawan::{init_lorawan_info, into_lorawan_mode};
+use lorawan::{init_lorawan_info, join_lorawan_network};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 use proto::get_apply_code_cmd;
@@ -144,13 +144,13 @@ async fn main(spawner: Spawner) {
         info!("uart init failed {:?}", uart.err());
     }
     let i2c = init_display_i2c!(p);
+    let _ = config::init().await;
     unwrap!(spawner.spawn(serial::serial_listen()));
     unwrap!(spawner.spawn(key_handle()));
     let _ = init_lorawan_info().await;
     init_random_seed(seed).await;
-    unwrap!(spawner.spawn(join_network()));
+    unwrap!(spawner.spawn(join_network_handle()));
     dislay_init(i2c).await;
-    let _ = config::init().await;
     let app = App::new();
     app.show().await;
 }
@@ -191,8 +191,13 @@ async fn key_handle() {
 }
 
 #[embassy_executor::task]
-async fn join_network() {
-    let mut delay_max = 10000;
+async fn join_network_handle() {
+    let mut delay_max = {
+        let config = config::CONFIG.lock().await;
+        let join_delay_max_sec = config.as_ref().unwrap().join_delay_max;
+        join_delay_max_sec as u64 * 1000
+    };
+    info!("delay max: {}", delay_max);
     let delay = { rand(delay_max).await };
     {
         info!("delay: {}", delay);
@@ -200,8 +205,8 @@ async fn join_network() {
     }
     loop {
         wb25_reset().await;
-        let into = { into_lorawan_mode().await };
-        if into {
+        let joined = { join_lorawan_network().await };
+        if joined {
             DISPLAY_CHANNEL
                 .send(AppEvent::NavigateTo(AppActivity::Light(
                     LightActivity::new(),
@@ -209,15 +214,16 @@ async fn join_network() {
                 .await;
             register().await;
             let _ = RE_JOIN_CHANNEL.receive().await;
-            info!("re join......");
+            info!("re join...... delay: {}", delay);
             Timer::after(Duration::from_millis(delay)).await;
         } else {
-            if delay_max < 500 {
-                delay_max = rand(2000).await;
-            }
             delay_max = delay_max / 2;
-            info!("join failed");
-            Timer::after(Duration::from_millis(delay_max)).await;
+            if delay_max < 1000 {
+                delay_max = rand(5000).await;
+            }
+            let delay = rand(delay_max).await;
+            info!("join failed delay: {}", delay);
+            Timer::after(Duration::from_millis(delay)).await;
         }
     }
 }

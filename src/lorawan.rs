@@ -5,7 +5,7 @@ use embassy_time::{Duration, Timer};
 use heapless::String;
 
 use crate::{
-    info, into_cmd_mode, lorawan,
+    info, into_cmd_mode,
     serial::{
         send_command, Command, GetAppEuiResult, GetDevAddrResult, GetDevEuiResult, GetVerResult,
         VoidResult,
@@ -14,6 +14,26 @@ use crate::{
 };
 
 pub static LORAWAN: Mutex<ThreadModeRawMutex, Option<LoRaWAN>> = Mutex::new(None);
+/// 0. busy 1. state
+pub static LORAWAN_STATE: Mutex<ThreadModeRawMutex, (PinState, PinState)> =
+    Mutex::new((PinState::None, PinState::None));
+
+#[derive(Copy, Clone)]
+pub enum PinState {
+    None,
+    High,
+    Low,
+}
+
+impl PinState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PinState::None => "-",
+            PinState::High => "H",
+            PinState::Low => "L",
+        }
+    }
+}
 
 pub struct LoRaWAN {
     pub deveui: Option<String<16>>,
@@ -121,17 +141,17 @@ pub async fn init_lorawan_info() -> Result<(), ()> {
 /// 进入LoRaWAN 透传模式
 
 /// 9. mode set low
-pub async fn into_lorawan_mode() -> bool {
+pub async fn join_lorawan_network() -> bool {
     {
         if *IN_CMD.lock().await {
             Timer::after(Duration::from_millis(100)).await;
             return false;
         }
     }
-    info!("into lorawan mode");
+    info!("join lorawan network");
     MODE.lock().await.as_mut().unwrap().set_low();
     Timer::after(Duration::from_secs(5)).await;
-    let mut reply = 10;
+    let mut reply = 37;
     let is_join = {
         let join: bool;
         loop {
@@ -142,15 +162,25 @@ pub async fn into_lorawan_mode() -> bool {
             }
             Timer::after(Duration::from_millis(300)).await;
             let busy = BUSY.lock().await;
-            info!("busy: {:?}", busy.as_ref().unwrap().is_high());
+            info!("busy is high: {:?}", busy.as_ref().unwrap().is_high());
             if !busy.as_ref().unwrap().is_high() {
+                let mut lrw_state = LORAWAN_STATE.lock().await;
+                lrw_state.0 = PinState::Low;
                 continue;
+            } else {
+                let mut lrw_state = LORAWAN_STATE.lock().await;
+                lrw_state.0 = PinState::High;
             }
             let state = STAT.lock().await;
-            info!("state: {:?}", state.as_ref().unwrap().is_high());
+            info!("state is high: {:?}", state.as_ref().unwrap().is_high());
             if state.as_ref().unwrap().is_high() {
                 join = true;
+                let mut lrw_state = LORAWAN_STATE.lock().await;
+                lrw_state.1 = PinState::High;
                 break;
+            } else {
+                let mut lrw_state = LORAWAN_STATE.lock().await;
+                lrw_state.1 = PinState::Low;
             }
         }
         join
