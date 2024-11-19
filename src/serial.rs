@@ -1,7 +1,7 @@
 use core::fmt::Write;
 use core::str::FromStr;
 
-use crate::{fmt::*, lorawan::LoRaWANPackage, AppEvent, DISPLAY_CHANNEL};
+use crate::{fmt::*, AppEvent, DISPLAY_CHANNEL, IN_CMD, MODE};
 use embassy_futures::select::{select, Either};
 use embassy_stm32::{
     mode::Async,
@@ -148,6 +148,7 @@ pub async fn init(uart: Uart<'static, Async>) {
 
 pub async fn uart1_write(data: &[u8]) -> Result<(), ()> {
     let mut lock = UART1_WRITE.lock().await;
+    info!("<<< write {:02X}", data);
     if lock.as_mut().unwrap().write(data).await.is_ok() {
         info!("<<< write success");
     } else {
@@ -273,6 +274,10 @@ pub async fn send_command<T>(command: Command, timeout: Duration) -> Result<T, (
 where
     T: CommandResultTrait,
 {
+    MODE.lock().await.as_mut().unwrap().set_high();
+    {
+        *IN_CMD.lock().await = true;
+    }
     info!(
         "[send command]: {:?}",
         core::str::from_utf8(&command.as_bytes()).unwrap()
@@ -283,7 +288,7 @@ where
         *sender = Some(CHANNEL.sender());
     }
     let _ = uart1_write(command.as_bytes().as_slice()).await;
-    let rs = select(
+    let rs: Either<Result<T, ()>, Result<T, ()>> = select(
         async {
             Timer::after(timeout).await;
             Err::<T, ()>(())
@@ -303,6 +308,9 @@ where
     {
         let mut sender = SERIAL_SENDER_CHANNEL.lock().await;
         *sender = None;
+    }
+    {
+        *IN_CMD.lock().await = false;
     }
     match rs {
         Either::First(_) => Err(()),

@@ -10,7 +10,7 @@ use crate::{
         send_command, Command, GetAppEuiResult, GetDevAddrResult, GetDevEuiResult, GetVerResult,
         VoidResult,
     },
-    BUSY, MODE, STAT,
+    BUSY, IN_CMD, MODE, STAT,
 };
 
 pub static LORAWAN: Mutex<ThreadModeRawMutex, Option<LoRaWAN>> = Mutex::new(None);
@@ -77,8 +77,8 @@ pub async fn wait_busy() {
     let state = busy.as_ref().unwrap().is_low();
     info!("busy: {:?}", state);
     if busy.as_ref().unwrap().is_low() {
-        Timer::after(Duration::from_millis(1500)).await;
-        info!("is busy~~~~~~~~~~~~~~~~~~");
+        Timer::after(Duration::from_millis(300)).await;
+        info!("is busy~~~~~~~~~~~~~~~~~~ignore and continue");
     }
 }
 
@@ -122,10 +122,15 @@ pub async fn init_lorawan_info() -> Result<(), ()> {
 
 /// 9. mode set low
 pub async fn into_lorawan_mode() -> bool {
-    MODE.lock().await.as_mut().unwrap().set_high();
-    Timer::after(Duration::from_millis(100)).await;
+    {
+        if *IN_CMD.lock().await {
+            Timer::after(Duration::from_millis(100)).await;
+            return false;
+        }
+    }
     info!("into lorawan mode");
     MODE.lock().await.as_mut().unwrap().set_low();
+    Timer::after(Duration::from_secs(5)).await;
     let mut reply = 10;
     let is_join = {
         let join: bool;
@@ -135,7 +140,7 @@ pub async fn into_lorawan_mode() -> bool {
                 join = false;
                 break;
             }
-            Timer::after(Duration::from_millis(100)).await;
+            Timer::after(Duration::from_millis(300)).await;
             let busy = BUSY.lock().await;
             info!("busy: {:?}", busy.as_ref().unwrap().is_high());
             if !busy.as_ref().unwrap().is_high() {
@@ -167,7 +172,6 @@ pub async fn into_lorawan_mode() -> bool {
 /// 11. at+save\r\n
 /// 12. at+reset\r\n
 pub async fn factory() {
-    MODE.lock().await.as_mut().unwrap().set_high();
     // 1.
     let _: Result<VoidResult, ()> =
         send_command(Command::Factory, Duration::from_millis(2000)).await;

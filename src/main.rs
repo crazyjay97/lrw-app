@@ -13,6 +13,7 @@ use activity::{dislay_init, light::LightActivity, App, AppActivity};
 use embassy_executor::Spawner;
 use embassy_futures::select;
 use embassy_stm32::{
+    adc::{Adc, AdcChannel, SampleTime},
     bind_interrupts,
     exti::ExtiInput,
     gpio::{Input, Level, Output, Pull, Speed},
@@ -30,7 +31,7 @@ use lorawan::{init_lorawan_info, into_lorawan_mode};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 use proto::get_apply_code_cmd;
-use utils::rand;
+use utils::{init_seed, rand};
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
@@ -63,6 +64,7 @@ static MODE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(Non
 static WAKE: Mutex<ThreadModeRawMutex, Option<Output<'static>>> = Mutex::new(None);
 static BUSY: InputType = Mutex::new(None);
 static STAT: InputType = Mutex::new(None);
+static IN_CMD: Mutex<ThreadModeRawMutex, bool> = Mutex::new(false);
 static FLASH: Mutex<ThreadModeRawMutex, Option<FLASH>> = Mutex::new(None);
 pub enum AppEvent {
     Prev,
@@ -91,6 +93,7 @@ async fn main(spawner: Spawner) {
     });
     config.rcc.mux.lptim1sel = rcc::mux::Lptim1sel::PCLK1;
     config.rcc.mux.i2c1sel = rcc::mux::I2c1sel::SYS;
+    config.rcc.mux.adcsel = rcc::mux::Adcsel::SYS;
     let mut p = embassy_stm32::init(config);
     {
         let flash = p.FLASH;
@@ -98,9 +101,26 @@ async fn main(spawner: Spawner) {
     }
     let (_oled_dc, _oled_rst) = display_pre_init(&mut p.PD11, &mut p.PD12);
     init_mode_wake(p.PA0, p.PA5).await;
+    let seed: u64 = {
+        let mut pin1 = p.PA3.degrade_adc();
+        let mut pin2 = p.PA4.degrade_adc();
+        let mut adc = Adc::new(p.ADC1);
+        let mut measurements = [0u16; 2];
+        adc.set_resolution(embassy_stm32::adc::Resolution::BITS12);
+        adc.read(
+            &mut p.DMA1_CH1,
+            [
+                (&mut pin1, SampleTime::CYCLES12_5),
+                (&mut pin2, SampleTime::CYCLES12_5),
+            ]
+            .into_iter(),
+            &mut measurements,
+        )
+        .await;
+        measurements[0] as u64 + measurements[1] as u64
+    };
     {
-        let busy = Input::new(p.PA6, Pull::Up);
-
+        let busy = Input::new(p.PA6, Pull::None);
         *BUSY.lock().await = Some(busy);
         let state = Input::new(p.PA7, Pull::None);
         *STAT.lock().await = Some(state);
@@ -127,6 +147,7 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(serial::serial_listen()));
     unwrap!(spawner.spawn(key_handle()));
     let _ = init_lorawan_info().await;
+    init_random_seed(seed).await;
     unwrap!(spawner.spawn(join_network()));
     dislay_init(i2c).await;
     let _ = config::init().await;
@@ -171,19 +192,14 @@ async fn key_handle() {
 
 #[embassy_executor::task]
 async fn join_network() {
-    let delay = {
-        let lrw = lorawan::LORAWAN.lock().await;
-        let lrw = lrw.as_ref().unwrap();
-        let deveui = lrw.deveui.as_ref().unwrap();
-        let mut eui: [u8; 8] = [0; 8];
-        let _ = hex::decode_to_slice(&deveui, &mut eui);
-        rand(&eui, 30000)
-    };
+    let mut delay_max = 10000;
+    let delay = { rand(delay_max).await };
     {
         info!("delay: {}", delay);
-        //Timer::after(Duration::from_millis(delay.into())).await;
+        Timer::after(Duration::from_millis(delay)).await;
     }
     loop {
+        wb25_reset().await;
         let into = { into_lorawan_mode().await };
         if into {
             DISPLAY_CHANNEL
@@ -194,16 +210,24 @@ async fn join_network() {
             register().await;
             let _ = RE_JOIN_CHANNEL.receive().await;
             info!("re join......");
-            let mut reset = RESET.lock().await;
-            reset.as_mut().unwrap().set_low();
-            Timer::after(Duration::from_millis(100)).await;
-            reset.as_mut().unwrap().set_high();
-            Timer::after(Duration::from_millis(100)).await;
+            Timer::after(Duration::from_millis(delay)).await;
         } else {
+            if delay_max < 500 {
+                delay_max = rand(2000).await;
+            }
+            delay_max = delay_max / 2;
             info!("join failed");
-            Timer::after(Duration::from_secs(5)).await;
+            Timer::after(Duration::from_millis(delay_max)).await;
         }
     }
+}
+
+async fn wb25_reset() {
+    let mut reset = RESET.lock().await;
+    reset.as_mut().unwrap().set_low();
+    Timer::after(Duration::from_millis(100)).await;
+    reset.as_mut().unwrap().set_high();
+    Timer::after(Duration::from_millis(100)).await;
 }
 
 async fn register() {
@@ -220,6 +244,15 @@ async fn register() {
             break;
         }
     }
+}
+
+async fn init_random_seed(seed_v: u64) {
+    let lrw = lorawan::LORAWAN.lock().await;
+    let lrw = lrw.as_ref().unwrap();
+    let deveui = lrw.deveui.as_ref().unwrap();
+    let mut eui: [u8; 8] = [0; 8];
+    let _ = hex::decode_to_slice(&deveui, &mut eui);
+    init_seed(&eui, seed_v).await;
 }
 
 async fn apply_code() {

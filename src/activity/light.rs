@@ -36,6 +36,7 @@ pub struct LightActivity {
     light: RefCell<bool>,
     load: RefCell<bool>,
     brightness: RefCell<u8>,
+    send_heartbeat: RefCell<bool>,
 }
 
 impl LightActivity {
@@ -48,6 +49,7 @@ impl LightActivity {
             light: RefCell::new(false),
             load: RefCell::new(false),
             brightness: RefCell::new(0x5F),
+            send_heartbeat: RefCell::new(false),
         }
     }
 }
@@ -106,7 +108,11 @@ impl Activity for LightActivity {
                                         self.light.replace(false);
                                     }
                                 } else if cmd == 0x83 {
-                                    self.load.replace(true);
+                                    if !*self.load.borrow_mut() {
+                                        self.load.replace(true);
+                                    } else {
+                                        return;
+                                    }
                                 } else if cmd == 0x84 {
                                     let brightness = data.data[18];
                                     if next {
@@ -119,6 +125,15 @@ impl Activity for LightActivity {
                                         EuiQrCodeActivity::new(),
                                     ))
                                     .await;
+                                    return;
+                                } else if cmd == 0x86 {
+                                    let control = data.data[18];
+                                    if control == 0x01 {
+                                        self.send_heartbeat.replace(true);
+                                    }
+                                    if control == 0x02 {
+                                        self.send_heartbeat.replace(false);
+                                    }
                                     return;
                                 }
                             }
@@ -135,15 +150,17 @@ impl Activity for LightActivity {
         select::select(
             async {
                 loop {
-                    let brightness = { *self.brightness.borrow() };
-                    let light = { *self.light.borrow() };
-                    let pack = pack_heartbeat(Heartbeat {
-                        light: if light { 0x01 } else { 0x02 },
-                        brightness,
-                    });
-                    let _ = uart1_write(&pack.to_bytes()).await;
-                    let _ = Timer::after(Duration::from_millis(5000)).await;
-                    self.refresh().await;
+                    let send_heartbeat = { *self.send_heartbeat.borrow_mut() };
+                    if send_heartbeat {
+                        let brightness = { *self.brightness.borrow() };
+                        let light = { *self.light.borrow() };
+                        let pack = pack_heartbeat(Heartbeat {
+                            light: if light { 0x01 } else { 0x02 },
+                            brightness,
+                        });
+                        let _ = uart1_write(&pack.to_bytes()).await;
+                    }
+                    let _ = Timer::after(Duration::from_millis(30000)).await;
                 }
             },
             async {
@@ -208,8 +225,8 @@ impl Activity for LightActivity {
                     let _ = Text::with_text_style("LoRaWAN", center, character_style, left_aligned)
                         .draw(display);
                     {
-                        let mut load = self.load.borrow_mut();
-                        if !*load {
+                        let load = { *self.load.borrow_mut() };
+                        if !load {
                             {
                                 let light = self.light.borrow();
                                 let style = PrimitiveStyleBuilder::new()
@@ -254,7 +271,9 @@ impl Activity for LightActivity {
                                     w += 1;
                                 }
                             }
-                            *load = false
+                            {
+                                *self.load.borrow_mut() = false
+                            };
                         }
                     }
                     let _ = display.flush().await;
