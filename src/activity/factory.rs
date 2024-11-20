@@ -4,6 +4,7 @@ use crate::{
     info,
     lorawan::factory,
     serial::{send_command, Command, GetDevEuiResult},
+    AppEvent,
 };
 
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
@@ -37,9 +38,9 @@ impl FactoryActivity {
 }
 
 impl Activity for FactoryActivity {
-    async fn key_handle(&self, e: crate::AppEvent, app: &super::App) {
+    async fn key_handle(&self, e: AppEvent, app: &super::App) {
         match e {
-            crate::AppEvent::Prev => {
+            AppEvent::Prev => {
                 let eui: Result<GetDevEuiResult, ()> =
                     send_command(Command::GetDevEui, Duration::from_millis(300)).await;
                 if let Ok(eui) = eui {
@@ -48,8 +49,8 @@ impl Activity for FactoryActivity {
                     info!("eui: failed");
                 }
             }
-            crate::AppEvent::Next => {}
-            crate::AppEvent::Confirm => {
+            AppEvent::Next => {}
+            AppEvent::Confirm => {
                 {
                     *self.state.lock().await = FactoryState::Factorying;
                 }
@@ -61,9 +62,10 @@ impl Activity for FactoryActivity {
                 }
                 self.show().await;
             }
-            crate::AppEvent::Back => {}
-            crate::AppEvent::Message(_, _) => {}
-            crate::AppEvent::NavigateTo(_) => {}
+            AppEvent::Back => {}
+            AppEvent::Message(_, _) => {}
+            AppEvent::NavigateTo(_) => {}
+            _ => {}
         }
     }
 

@@ -27,7 +27,7 @@ use embassy_stm32::{
 };
 use embassy_time::{Duration, Timer};
 use fmt::*;
-use lorawan::{init_lorawan_info, join_lorawan_network};
+use lorawan::{init_lorawan_info, join_lorawan_network, Joined, PinState, LORAWAN_STATE};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 use proto::get_apply_code_cmd;
@@ -73,6 +73,7 @@ pub enum AppEvent {
     Back,
     NavigateTo(AppActivity),
     Message([u8; 1024], usize),
+    Refresh,
 }
 
 #[embassy_executor::main]
@@ -204,9 +205,17 @@ async fn join_network_handle() {
         Timer::after(Duration::from_millis(delay)).await;
     }
     loop {
-        wb25_reset().await;
-        let joined = { join_lorawan_network().await };
+        let joined = {
+            let joined_state = { LORAWAN_STATE.lock().await.2 };
+            if let Joined::Yes = joined_state {
+                true
+            } else {
+                wb25_reset().await;
+                join_lorawan_network().await
+            }
+        };
         if joined {
+            Timer::after(Duration::from_millis(1000)).await;
             DISPLAY_CHANNEL
                 .send(AppEvent::NavigateTo(AppActivity::Light(
                     LightActivity::new(),
@@ -215,6 +224,9 @@ async fn join_network_handle() {
             register().await;
             let _ = RE_JOIN_CHANNEL.receive().await;
             info!("re join...... delay: {}", delay);
+            {
+                *LORAWAN_STATE.lock().await = (PinState::None, PinState::None, Joined::No)
+            }
             Timer::after(Duration::from_millis(delay)).await;
         } else {
             delay_max = delay_max / 2;

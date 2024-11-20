@@ -3,6 +3,7 @@ use core::cell::RefCell;
 mod device_info;
 mod factory;
 pub mod light;
+use crate::lorawan::{Joined, LORAWAN_STATE};
 use crate::{fmt::*, lorawan};
 use crate::{
     utils::{
@@ -423,10 +424,20 @@ impl Activity for EuiQrCodeActivity {
                 //app.show().await;
             }
             AppEvent::Message(buf, size) => {
-                info!("{:02X}", buf[0..size]);
+                if size == 4 && buf[0] >> 7 == 1 {
+                    {
+                        let mut lrw_state = LORAWAN_STATE.lock().await;
+                        lrw_state.2 = Joined::Yes;
+                    }
+                    self.refresh().await;
+                }
+            }
+            AppEvent::Refresh => {
+                self.refresh().await;
             }
             AppEvent::NavigateTo(activity) => {
                 self.done().await;
+                Timer::after(Duration::from_millis(300)).await;
                 app.navigate_to(activity).await;
             }
         }
@@ -473,26 +484,20 @@ impl Activity for EuiQrCodeActivity {
         }
         let _ = display.flush().await;
 
-        let _ = select(
-            async {
-                let c = self.chan.receive().await;
-                if c == 0xFF {
-                    return;
-                }
-            },
-            async {
-                loop {
-                    let state = { *lorawan::LORAWAN_STATE.lock().await };
-                    self.draw_state(&mut display, "Busy", &state.0, 128, 20)
-                        .await;
-                    self.draw_state(&mut display, "State", &state.1, 128, 40)
-                        .await;
-                    let _ = display.flush().await;
-                    Timer::after(Duration::from_millis(300)).await;
-                }
-            },
-        )
-        .await;
+        loop {
+            let state = { *lorawan::LORAWAN_STATE.lock().await };
+            self.draw_state(&mut display, "Busy", &state.0, 128, 10)
+                .await;
+            self.draw_state(&mut display, "State", &state.1, 128, 30)
+                .await;
+            self.draw_state(&mut display, "Joined", &state.2, 128, 50)
+                .await;
+            let _ = display.flush().await;
+            let c = self.chan.receive().await;
+            if c == 0xFF {
+                return;
+            }
+        }
     }
 }
 
@@ -502,11 +507,15 @@ impl EuiQrCodeActivity {
         Timer::after(Duration::from_millis(50)).await;
     }
 
-    async fn draw_state(
+    pub async fn refresh(&self) {
+        self.chan.send(0).await;
+    }
+
+    async fn draw_state<'a, T: Into<&'a str>>(
         &self,
         display: &mut Ssd1306DisplayType,
         label: &str,
-        state: &lorawan::PinState,
+        state: T,
         x: i32,
         y: i32,
     ) {
@@ -520,7 +529,7 @@ impl EuiQrCodeActivity {
             .baseline(Baseline::Middle)
             .build();
         let mut s = String::<16>::new();
-        let _ = write!(s, "{}: {}", label, state.as_str());
+        let _ = write!(s, "{}: {}", label, state.into());
         let _ = Text::with_text_style(s.as_str(), Point::new(x, y), style, aligned).draw(display);
     }
 }
@@ -551,6 +560,7 @@ impl Activity for TodoActivity {
                 //app.show().await;
             }
             AppEvent::Message(_, _) => {}
+            _ => {}
         }
     }
 

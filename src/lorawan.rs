@@ -10,13 +10,13 @@ use crate::{
         send_command, Command, GetAppEuiResult, GetDevAddrResult, GetDevEuiResult, GetVerResult,
         VoidResult,
     },
-    BUSY, IN_CMD, MODE, STAT,
+    AppEvent, BUSY, DISPLAY_CHANNEL, IN_CMD, MODE, STAT,
 };
 
 pub static LORAWAN: Mutex<ThreadModeRawMutex, Option<LoRaWAN>> = Mutex::new(None);
 /// 0. busy 1. state
-pub static LORAWAN_STATE: Mutex<ThreadModeRawMutex, (PinState, PinState)> =
-    Mutex::new((PinState::None, PinState::None));
+pub static LORAWAN_STATE: Mutex<ThreadModeRawMutex, (PinState, PinState, Joined)> =
+    Mutex::new((PinState::None, PinState::None, Joined::No));
 
 #[derive(Copy, Clone)]
 pub enum PinState {
@@ -25,12 +25,27 @@ pub enum PinState {
     Low,
 }
 
-impl PinState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
+impl From<&PinState> for &str {
+    fn from(value: &PinState) -> Self {
+        match value {
             PinState::None => "-",
             PinState::High => "H",
             PinState::Low => "L",
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub enum Joined {
+    Yes,
+    No,
+}
+
+impl From<&Joined> for &str {
+    fn from(value: &Joined) -> Self {
+        match value {
+            Joined::Yes => "Y",
+            Joined::No => "N",
         }
     }
 }
@@ -166,10 +181,12 @@ pub async fn join_lorawan_network() -> bool {
             if !busy.as_ref().unwrap().is_high() {
                 let mut lrw_state = LORAWAN_STATE.lock().await;
                 lrw_state.0 = PinState::Low;
+                DISPLAY_CHANNEL.send(AppEvent::Refresh).await;
                 continue;
             } else {
                 let mut lrw_state = LORAWAN_STATE.lock().await;
                 lrw_state.0 = PinState::High;
+                DISPLAY_CHANNEL.send(AppEvent::Refresh).await;
             }
             let state = STAT.lock().await;
             info!("state is high: {:?}", state.as_ref().unwrap().is_high());
@@ -177,10 +194,12 @@ pub async fn join_lorawan_network() -> bool {
                 join = true;
                 let mut lrw_state = LORAWAN_STATE.lock().await;
                 lrw_state.1 = PinState::High;
+                DISPLAY_CHANNEL.send(AppEvent::Refresh).await;
                 break;
             } else {
                 let mut lrw_state = LORAWAN_STATE.lock().await;
                 lrw_state.1 = PinState::Low;
+                DISPLAY_CHANNEL.send(AppEvent::Refresh).await;
             }
         }
         join
