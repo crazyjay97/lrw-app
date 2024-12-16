@@ -1,0 +1,46 @@
+[package]
+edition = "2018"
+readme = "README.md"
+name = "bootloader"
+version = "0.1.0"
+
+[dependencies]
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.4"
+cortex-m-semihosting = "0.5.0"
+panic-halt = "1.0.0"
+panic-semihosting = { version = "0.6.0", features = ["exit"] }
+rtt-target = "0.6.0"
+embassy-sync = { version = "0.6.0", git = "https://github.com/embassy-rs/embassy" }
+embassy-boot-stm32 = { version = "0.2.0", git = "https://github.com/embassy-rs/embassy" }
+embassy-stm32 = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy", features = [
+    "stm32l476vg",
+    "exti",
+    "time-driver-tim3",
+    "unstable-pac",
+] }
+defmt = { version = "0.3.6", optional = true }
+defmt-rtt = { version = "0.4.0", optional = true }
+
+[[bin]]
+name = "bootloader"
+test = false
+bench = false
+
+[profile.dev]
+debug = true
+lto = true
+opt-level = "z"
+incremental = true
+
+
+[features]
+default = ["debug"]
+defmt = ["dep:defmt"]
+defmt-rtt = ["dep:defmt-rtt"]
+debug = [
+    "defmt",
+    "defmt-rtt",
+    "embassy-stm32/defmt",
+    "embassy-sync/defmt",
+]
